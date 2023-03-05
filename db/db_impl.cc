@@ -1197,13 +1197,16 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
 }
 
+/*
+ * When passing a nullptr to @updates, force compaction
+ */
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   Writer w(&mutex_);
   w.batch = updates;
   w.sync = options.sync;
   w.done = false;
 
-  MutexLock l(&mutex_);
+  MutexLock l(&mutex_);  // mutex_::mu_ is locked
   writers_.push_back(&w);
   while (!w.done && &w != writers_.front()) {
     w.cv.Wait();
@@ -1212,6 +1215,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     return w.status;
   }
 
+  // &w == writers_.front() is TRUE
   // May temporarily unlock and wait.
   Status status = MakeRoomForWrite(updates == nullptr);
   uint64_t last_sequence = versions_->LastSequence();
@@ -1225,6 +1229,13 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     // during this phase since &w is currently responsible for logging
     // and protects against concurrent loggers and concurrent writes
     // into mem_.
+    // TODO: WHY?
+    // Other threads are blocked at cv.Wait(), they cannot wakeup unless
+    // current thread notify them (cv.Signal()).
+    // The group write_batch includes other Writers' batch.
+    // It's like &w is helping other threads' Writers.
+    // So we say that &w is currently responsible for logging and protects
+    // against concurrent loggers and concurrent writes into mem_.
     {
       mutex_.Unlock();
       status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
@@ -1254,7 +1265,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   while (true) {
     Writer* ready = writers_.front();
     writers_.pop_front();
-    if (ready != &w) {
+    if (ready != &w) {  // TODO: maybe there's no need to notify self?
       ready->status = status;
       ready->done = true;
       ready->cv.Signal();
@@ -1322,6 +1333,12 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
 
 // REQUIRES: mutex_ is held
 // REQUIRES: this thread is currently at the front of the writer queue
+// MakeRoomForWrite do:
+//  1. sleep to faster the BG compaction or
+//  2. wait for the BG compaction
+//  3. create a new MemTable and trigger flush
+// while there's no spare room for new WriteBatch
+// @param force: force compaction
 Status DBImpl::MakeRoomForWrite(bool force) {
   mutex_.AssertHeld();
   assert(!writers_.empty());
@@ -1358,6 +1375,11 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       Log(options_.info_log, "Too many L0 files; waiting...\n");
       background_work_finished_signal_.Wait();
     } else {
+      /*
+       * 1. allow_delay = false OR there's no compaction stress.
+       * 2. The current memtable is full
+       * 3. imm_ is NULL
+       */
       // Attempt to switch to a new memtable and trigger compaction of old
       assert(versions_->PrevLogNumber() == 0);
       uint64_t new_log_number = versions_->NewFileNumber();

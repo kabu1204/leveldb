@@ -71,8 +71,13 @@ class CondVar {
   CondVar& operator=(const CondVar&) = delete;
 
   void Wait() {
+    /* Assumes the calling thread already holds a non-shared lock
+     * (i.e., a lock acquired by lock, try_lock, try_lock_for,
+     * or try_lock_until) on m.
+     */
     std::unique_lock<std::mutex> lock(mu_->mu_, std::adopt_lock);
     cv_.wait(lock);
+    // disassociates the associated mutex without unlocking (i.e., releasing ownership of) it
     lock.release();
   }
   void Signal() { cv_.notify_one(); }
