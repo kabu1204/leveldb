@@ -99,11 +99,14 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
     assert(r->options.comparator->Compare(key, Slice(r->last_key)) > 0);
   }
 
+  // index entry is the entry whose key is >= all entries(>= r->last_key) in the last block,
+  // and < all entries in the current new block(< key).
   if (r->pending_index_entry) {
     assert(r->data_block.empty());
     r->options.comparator->FindShortestSeparator(&r->last_key, key);
+    // r->last_key is physically shorter.
     std::string handle_encoding;
-    r->pending_handle.EncodeTo(&handle_encoding);
+    r->pending_handle.EncodeTo(&handle_encoding);   // BlockHandle is a block_ptr(<offset, size>) pointing a block of file.
     r->index_block.Add(r->last_key, Slice(handle_encoding));
     r->pending_index_entry = false;
   }
