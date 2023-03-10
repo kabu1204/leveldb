@@ -46,7 +46,7 @@ Status Writer::AddRecord(const Slice& slice) {
     if (leftover < kHeaderSize) {
       // Switch to a new block
       if (leftover > 0) {
-        // Fill the trailer (literal below relies on kHeaderSize being 7)
+        // zero-Fill the trailer (literal below relies on kHeaderSize being 7)
         static_assert(kHeaderSize == 7, "");
         dest_->Append(Slice("\x00\x00\x00\x00\x00\x00", leftover));
       }

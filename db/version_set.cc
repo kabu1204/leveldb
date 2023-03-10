@@ -682,6 +682,7 @@ class VersionSet::Builder {
       v->files_[level].reserve(base_files.size() + added_files->size());
       for (const auto& added_file : *added_files) {
         // Add all smaller files listed in base_
+        // TODO: do we need this extra bin-search here?
         for (std::vector<FileMetaData*>::const_iterator bpos =
                  std::upper_bound(base_iter, base_end, added_file, cmp);
              base_iter != bpos; ++base_iter) {
@@ -1028,6 +1029,10 @@ void VersionSet::MarkFileNumberUsed(uint64_t number) {
   }
 }
 
+/*
+ * Precomputed best level for next compaction,
+ * i.e., set v->compaction_level_ and v->compaction_score_
+ */
 void VersionSet::Finalize(Version* v) {
   // Precomputed best level for next compaction
   int best_level = -1;
@@ -1229,7 +1234,7 @@ Iterator* VersionSet::MakeInputIterator(Compaction* c) {
   int num = 0;
   for (int which = 0; which < 2; which++) {
     if (!c->inputs_[which].empty()) {
-      if (c->level() + which == 0) {
+      if (c->level() + which == 0) {  // TODO: c->level()==0 && which==0
         const std::vector<FileMetaData*>& files = c->inputs_[which];
         for (size_t i = 0; i < files.size(); i++) {
           list[num++] = table_cache_->NewIterator(options, files[i]->number,
@@ -1243,7 +1248,7 @@ Iterator* VersionSet::MakeInputIterator(Compaction* c) {
       }
     }
   }
-  assert(num <= space);
+  assert(num <= space); // for every file in level0, create an iter. all files in level+1, create a TwoLevelIter
   Iterator* result = NewMergingIterator(&icmp_, list, num);
   delete[] list;
   return result;
@@ -1258,6 +1263,8 @@ Compaction* VersionSet::PickCompaction() {
   const bool size_compaction = (current_->compaction_score_ >= 1);
   const bool seek_compaction = (current_->file_to_compact_ != nullptr);
   if (size_compaction) {
+    // set at the end of last compaction
+    // according to the total size and number of files.
     level = current_->compaction_level_;
     assert(level >= 0);
     assert(level + 1 < config::kNumLevels);
@@ -1268,6 +1275,7 @@ Compaction* VersionSet::PickCompaction() {
       FileMetaData* f = current_->files_[level][i];
       if (compact_pointer_[level].empty() ||
           icmp_.Compare(f->largest.Encode(), compact_pointer_[level]) > 0) {
+        // start from compact_pointer_[level]
         c->inputs_[0].push_back(f);
         break;
       }
@@ -1514,6 +1522,9 @@ void Compaction::AddInputDeletions(VersionEdit* edit) {
   }
 }
 
+/*
+ * return false if we find a file which the user_key falls exactly in the range of.
+ */
 bool Compaction::IsBaseLevelForKey(const Slice& user_key) {
   // Maybe use binary search to find right entry instead of linear search?
   const Comparator* user_cmp = input_version_->vset_->icmp_.user_comparator();
@@ -1549,7 +1560,11 @@ bool Compaction::ShouldStopBefore(const Slice& internal_key) {
     grandparent_index_++;
   }
   seen_key_ = true;
-
+  /*
+   * The output file will be written to level_+1(parents_). It should not overlap
+   * too much with level_+2(grandparents_), otherwise the next compaction will be
+   * too stressful.
+   */
   if (overlapped_bytes_ > MaxGrandParentOverlapBytes(vset->options_)) {
     // Too much overlap for current output; start new output
     overlapped_bytes_ = 0;

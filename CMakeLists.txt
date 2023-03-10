@@ -14,6 +14,8 @@ if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_EXTENSIONS OFF)
 endif(NOT CMAKE_C_STANDARD)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # C++ standard can be overridden when this is used as a sub-project.
 if(NOT CMAKE_CXX_STANDARD)
   # This project requires C++11.
@@ -364,6 +366,7 @@ if(LEVELDB_BUILD_TESTS)
     get_filename_component(test_target_name "${test_file}" NAME_WE)
 
     add_executable("${test_target_name}" "")
+    target_include_directories("${test_target_name}" PRIVATE include)
     target_sources("${test_target_name}"
       PRIVATE
         "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
@@ -388,6 +391,7 @@ if(LEVELDB_BUILD_TESTS)
   endfunction(leveldb_test)
 
   leveldb_test("db/c_test.c")
+  leveldb_test("user/main.cc")
 
   if(NOT BUILD_SHARED_LIBS)
     # TODO(costan): This test also uses

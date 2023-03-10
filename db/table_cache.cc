@@ -50,7 +50,7 @@ Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
     RandomAccessFile* file = nullptr;
     Table* table = nullptr;
     s = env_->NewRandomAccessFile(fname, &file);
-    if (!s.ok()) {
+    if (!s.ok()) {  // compatibility
       std::string old_fname = SSTTableFileName(dbname_, file_number);
       if (env_->NewRandomAccessFile(old_fname, &file).ok()) {
         s = Status::OK();
@@ -82,7 +82,7 @@ Iterator* TableCache::NewIterator(const ReadOptions& options,
     *tableptr = nullptr;
   }
 
-  Cache::Handle* handle = nullptr;
+  Cache::Handle* handle = nullptr;  // key: file_number, value: TableAndFile
   Status s = FindTable(file_number, file_size, &handle);
   if (!s.ok()) {
     return NewErrorIterator(s);

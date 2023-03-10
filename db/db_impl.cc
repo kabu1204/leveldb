@@ -957,7 +957,13 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         has_current_user_key = true;
         last_sequence_for_key = kMaxSequenceNumber;
       }
-
+      /*
+       * For the InternalKeys with the same user_key, they are sorted with descending
+       * SequenceNumber.
+       * We only need to keep newer than smallest_snapshot records (seqNumber >= smallest_snapshot),
+       * and drop other records(seqNumber < smallest_snapshot).
+       * So current key's sequence(which we will drop) < last_sequence_for_key <= smallest_snapshot
+       */
       if (last_sequence_for_key <= compact->smallest_snapshot) {
         // Hidden by an newer entry for same user key
         drop = true;  // (A)
@@ -971,12 +977,15 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         //     smaller sequence numbers will be dropped in the next
         //     few iterations of this loop (by rule (A) above).
         // Therefore this deletion marker is obsolete and can be dropped.
+        // This is useful for reclaiming space when there's many Delete operations.
         drop = true;
       }
 
       last_sequence_for_key = ikey.sequence;
+      Log(options_.info_log, "ikey.sequence: %llu",
+          ikey.sequence);
     }
-#if 0
+#ifndef NDEBUG
     Log(options_.info_log,
         "  Compact: %s, seq %d, type: %d %d, drop: %d, is_base: %d, "
         "%d smallest_snapshot: %d",
@@ -997,7 +1006,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       if (compact->builder->NumEntries() == 0) {
         compact->current_output()->smallest.DecodeFrom(key);
       }
-      compact->current_output()->largest.DecodeFrom(key);
+      compact->current_output()->largest.DecodeFrom(key); // TODO: can opt?
       compact->builder->Add(key, input->value());
 
       // Close output file if it is big enough
