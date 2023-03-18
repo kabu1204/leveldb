@@ -215,7 +215,7 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
                           void (*handle_result)(void*, const Slice&,
                                                 const Slice&)) {
   Status s;
-  Iterator* iiter = rep_->index_block->NewIterator(rep_->options.comparator);
+  Iterator* iiter = rep_->index_block->NewIterator(rep_->options.comparator);   // key => block_ptr
   iiter->Seek(k);
   if (iiter->Valid()) {
     Slice handle_value = iiter->value();

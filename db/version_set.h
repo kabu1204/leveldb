@@ -385,6 +385,7 @@ class Compaction {
   // is that we are positioned at one of the file ranges for each
   // higher level than the ones involved in this compaction (i.e. for
   // all L >= level_ + 2).
+  // see IsBaseLevelForKey
   size_t level_ptrs_[config::kNumLevels];
 };
 

@@ -382,6 +382,10 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
   return Status::OK();
 }
 
+/*
+ * Replay the log:
+ *  iterate through the log records, insert it into memtable.
+ */
 Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
                               bool* save_manifest, VersionEdit* edit,
                               SequenceNumber* max_sequence) {
@@ -1345,7 +1349,7 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
 // REQUIRES: this thread is currently at the front of the writer queue
 // MakeRoomForWrite do:
 //  1. sleep to faster the BG compaction or
-//  2. wait for the BG compaction
+//  2. wait for the BG compaction or
 //  3. create a new MemTable and trigger flush
 // while there's no spare room for new WriteBatch
 // @param force: force compaction

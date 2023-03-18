@@ -10,9 +10,9 @@ int main(){
   leveldb::Options options;
   leveldb::WriteOptions woption;
   options.create_if_missing = true;
-  options.info_log = new StdLogger;
-  leveldb::Status status = leveldb::DB::Open(options, "testdb", &db);
-  assert(status.ok());
+  options.info_log = new StdLogger();
+  leveldb::Status status =
+      leveldb::DB::Open(options, "testdb", &db);
 
   for(int i=0; i<1000000; ++i){
     db->Put(woption, "my_key"+std::to_string(i), "my_value"+std::to_string(i));

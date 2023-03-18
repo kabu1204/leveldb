@@ -231,7 +231,7 @@ void Version::AddIterators(const ReadOptions& options,
   // Merge all level zero files together since they may overlap
   for (size_t i = 0; i < files_[0].size(); i++) {
     iters->push_back(vset_->table_cache_->NewIterator(
-        options, files_[0][i]->number, files_[0][i]->file_size));
+        options, files_[0][i]->number, files_[0][i]->file_size, nullptr));
   }
 
   // For levels > 0, we can use a concatenating iterator that sequentially
@@ -338,12 +338,13 @@ Status Version::Get(const ReadOptions& options, const LookupKey& k,
     Status s;
     bool found;
 
+    // return false if we want to stop searching the next SST
     static bool Match(void* arg, int level, FileMetaData* f) {
       State* state = reinterpret_cast<State*>(arg);
 
       if (state->stats->seek_file == nullptr &&
           state->last_file_read != nullptr) {
-        // We have had more than one seek for this read.  Charge the 1st file.
+        // We have had more than one seek for this read.  Charge the 1st matched file.
         state->stats->seek_file = state->last_file_read;
         state->stats->seek_file_level = state->last_file_read_level;
       }
@@ -679,7 +680,27 @@ class VersionSet::Builder {
       std::vector<FileMetaData*>::const_iterator base_iter = base_files.begin();
       std::vector<FileMetaData*>::const_iterator base_end = base_files.end();
       const FileSet* added_files = levels_[level].added_files;
+      FileSet::const_iterator add_iter = added_files->begin();
       v->files_[level].reserve(base_files.size() + added_files->size());
+#if 1
+      while(add_iter != added_files->end() && base_iter != base_end){
+        if (!cmp(*add_iter, *base_iter)){
+          MaybeAddFile(v, level, *base_iter);
+          base_iter++;
+        } else {
+          MaybeAddFile(v, level, *add_iter);
+          add_iter++;
+        }
+      }
+      while(add_iter != added_files->end()){
+        MaybeAddFile(v, level, *add_iter);
+        add_iter++;
+      }
+      while(base_iter != base_end){
+        MaybeAddFile(v, level, *base_iter);
+        base_iter++;
+      }
+#else
       for (const auto& added_file : *added_files) {
         // Add all smaller files listed in base_
         // TODO: do we need this extra bin-search here?
@@ -696,6 +717,7 @@ class VersionSet::Builder {
       for (; base_iter != base_end; ++base_iter) {
         MaybeAddFile(v, level, *base_iter);
       }
+#endif
 
 #ifndef NDEBUG
       // Make sure there is no overlap in levels > 0
@@ -1523,7 +1545,9 @@ void Compaction::AddInputDeletions(VersionEdit* edit) {
 }
 
 /*
+ * search in the level >= level_+2,
  * return false if we find a file which the user_key falls exactly in the range of.
+ * REQUIRES: the caller calls this function on ascending user_keys
  */
 bool Compaction::IsBaseLevelForKey(const Slice& user_key) {
   // Maybe use binary search to find right entry instead of linear search?
