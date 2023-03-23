@@ -94,6 +94,27 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
 inline BlockHandle::BlockHandle()
     : offset_(~static_cast<uint64_t>(0)), size_(~static_cast<uint64_t>(0)) {}
 
+/*
+ * ValueHandle is a logical pointer with
+ * format <value_table_id, block_id, offset>
+ * Notice: offset_ is a logical offset, which is actually
+ * entry_idx.
+ */
+class ValueHandle {
+ public:
+  uint32_t table_;
+  uint32_t block_;
+  uint32_t offset_;
+  ValueHandle() = default;
+  ValueHandle(uint32_t table_id, uint32_t block_id, uint32_t offset)
+      : table_(table_id),
+        block_(block_id),
+        offset_(offset)
+  {}
+  void EncodeTo(std::string* dst);
+  Status DecodeFrom(Slice* input);
+};
+
 }  // namespace leveldb
 
 #endif  // STORAGE_LEVELDB_TABLE_FORMAT_H_

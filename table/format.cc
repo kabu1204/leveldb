@@ -138,4 +138,22 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   return Status::OK();
 }
 
+inline void ValueHandle::EncodeTo(std::string* dst){
+  assert(dst != nullptr);
+  dst->clear();
+  PutVarint32(dst, table_);
+  PutVarint32(dst, block_);
+  PutVarint32(dst, offset_);
+}
+
+inline Status ValueHandle::DecodeFrom(Slice* input){
+  if (GetVarint32(input, &table_) && GetVarint32(input, &block_)
+      && GetVarint32(input, &offset_))
+  {
+    return Status::OK();
+  } else {
+    return Status::Corruption("bad Value handle");
+  }
+}
+
 }  // namespace leveldb

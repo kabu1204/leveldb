@@ -692,13 +692,10 @@ class VersionSet::Builder {
           add_iter++;
         }
       }
-      while(add_iter != added_files->end()){
-        MaybeAddFile(v, level, *add_iter);
-        add_iter++;
-      }
-      while(base_iter != base_end){
-        MaybeAddFile(v, level, *base_iter);
-        base_iter++;
+      if (add_iter!=added_files->end()) {
+        std::for_each(add_iter, added_files->end(), [this, v, level](FileMetaData* f){ MaybeAddFile(v, level, f); });
+      } else {
+        std::for_each(base_iter, base_end, [this, v, level](FileMetaData* f){ MaybeAddFile(v, level, f); });
       }
 #else
       for (const auto& added_file : *added_files) {
