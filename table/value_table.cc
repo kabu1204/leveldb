@@ -318,6 +318,7 @@ Status ValueTableBuilder::Finish() {
     Footer footer;
     std::string footer_encoding;
     footer.set_index_handle(index_handle);
+    footer.set_metaindex_handle(index_handle);  // for validity assertion
     footer.EncodeTo(&footer_encoding);
     rep_->status = rep_->file->Append(footer_encoding);
     if(ok()){

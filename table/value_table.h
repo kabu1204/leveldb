@@ -37,7 +37,7 @@ class ValueTable {
   Iterator* NewIterator(const ReadOptions&) const;
 
  private:
-  friend class TableCache;
+  friend class ValueTableCache;
   struct Rep;
 
   static Iterator* BlockReader(void*, const ReadOptions&, const Slice&);

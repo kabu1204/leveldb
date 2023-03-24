@@ -140,6 +140,11 @@ struct LEVELDB_EXPORT Options {
   // Many applications will benefit from passing the result of
   // NewBloomFilterPolicy() here.
   const FilterPolicy* filter_policy = nullptr;
+
+  // If true, separate key-value pairs:
+  //  1. store value in ValueLog
+  //  2. store <key, ValueHandle> in LSMTree
+  bool use_vlog = false;
 };
 
 // Options that control read operations

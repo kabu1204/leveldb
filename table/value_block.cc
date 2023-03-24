@@ -80,7 +80,6 @@ class ValueBlock::Iter : public Iterator {
   }
 
   bool ParseCurrentKey() {
-    assert(Valid());
     const char* p = data_ + current_;
     const char* limit = data_ + entry_index_offset_;
 
@@ -130,12 +129,14 @@ class ValueBlock::Iter : public Iterator {
   void SeekToFirst() override {
     entry_index_ = 0;
     current_ = GetEntryOffset(0);
+    assert(Valid());
     ParseCurrentKey();
   }
 
   void SeekToLast() override {
     entry_index_ = num_entries_ - 1;
     current_ = GetEntryOffset(entry_index_);
+    assert(Valid());
     ParseCurrentKey();
   }
 
@@ -194,6 +195,12 @@ Iterator* ValueBlock::NewIndexIterator(const ValueBlock* blk) {
 Iterator* ValueBlock::NewDataIterator(const ValueBlock* blk) {
   return new DataIter(blk->data_, blk->entry_index_offset_,
                       blk->NumEntries());
+}
+
+ValueBlockBuilder::ValueBlockBuilder(const Options* options)
+    : options_(options)
+{
+
 }
 
 void ValueBlockBuilder::Reset() {
