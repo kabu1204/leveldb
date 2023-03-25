@@ -488,6 +488,13 @@ class WindowsEnv : public Env {
     return Status::OK();
   }
 
+  size_t PageSize() const override {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+
+    return si.dwPageSize;
+  }
+
   bool FileExists(const std::string& filename) override {
     return GetFileAttributesA(filename.c_str()) != INVALID_FILE_ATTRIBUTES;
   }

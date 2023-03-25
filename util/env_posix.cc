@@ -66,6 +66,13 @@ Status PosixError(const std::string& context, int error_number) {
   }
 }
 
+// REQUIRES: p is multiple of 2
+uint64_t AlignBackward(uint64_t x, uint64_t p){
+  if(x & (p-1))
+    x = (x+p) & (~(p-1));
+  return x;
+}
+
 // Helper class to limit resource usage to avoid exhaustion.
 // Currently used to limit read-only file descriptors and mmap file usage
 // so that we do not run out of file descriptors or virtual memory, or run into
@@ -464,6 +471,151 @@ class PosixWritableFile final : public WritableFile {
   const std::string dirname_;  // The directory of filename_.
 };
 
+class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
+ public:
+  // REQUIRES: len is multiple of OS page_size
+  // REQUIRES: reserved > file_size
+  // REQUIRES: O_TRUNC enabled when open fd
+  PosixMmapAppendableFile(std::string filename, size_t file_size, size_t reserved,
+                          int fd)
+      : filename_(std::move(filename)),
+        len_(file_size),
+        cap_(file_size),
+        reserved_(reserved),
+        prev_sync_(0),
+        fd_(fd),
+        page_size_(getpagesize())
+  {
+    assert(reserved > file_size);
+    assert(!(reserved & (page_size_-1)));
+    cap_ = AlignBackward(cap_ + (cap_>>1), page_size_);
+    reserved_ = AlignBackward(std::max<uint64_t>(cap_ << 1, reserved), page_size_);
+
+    mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,
+                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if(mmap_base_==MAP_FAILED){
+      status_ = Status::IOError("failed to mmap reserved space");
+      return;
+    }
+
+    ExtendMmapSize();
+  }
+
+  PosixMmapAppendableFile(const PosixMmapAppendableFile&) = delete;
+  PosixMmapAppendableFile& operator=(const PosixMmapAppendableFile&) = delete;
+
+  virtual ~PosixMmapAppendableFile() override {
+    ::munmap(static_cast<void*>(mmap_base_), reserved_);
+    if(ftruncate(fd_, len_)<0){
+      printf("failed to truncate file when closing\n");
+    }
+    printf("[LOG] truncate file size from %lu to %lu\n", cap_, len_.load());
+    close(fd_);
+  }
+
+  virtual Status Read(uint64_t offset, size_t n, Slice* result,
+                      char* scratch) const override {
+    if(!status_.ok()) return status_;
+
+    if (offset + n > len_.load()) {
+      *result = Slice();
+      return PosixError(filename_, EINVAL);
+    }
+
+    *result = Slice(mmap_base_ + offset, n);
+    return Status::OK();
+  }
+
+  virtual Status Append(const Slice& data) override {
+    if(!status_.ok()) return status_;
+    size_t write_size = data.size();
+    const char* write_data = data.data();
+
+    if (len_ + write_size > cap_) {  // TODO: consider order
+      ExtendMmapSize();
+      if(!status_.ok()) {
+        return status_;
+      }
+    }
+
+    std::memcpy(mmap_base_ + len_, write_data, write_size);
+    len_ += write_size;
+
+    return status_;
+  }
+
+  virtual Status Close() override {
+    return Status::OK();
+  }
+
+  virtual Status Flush() override {
+    return Status::OK();
+  }
+
+  virtual Status Sync() override {
+    assert(len_ >= prev_sync_);
+    if(len_ - prev_sync_ <= 0) return status_;
+    if(::msync(mmap_base_+prev_sync_, len_ - prev_sync_, MS_SYNC)<0){
+      status_ =  Status::IOError("failed to msync()");
+    }
+    printf("[LOG] Sync from %lu to %lu\n", prev_sync_, len_.load());
+    prev_sync_ = len_;
+    return status_;
+  }
+
+  uint64_t Offset() {
+    return len_.load();
+  }
+
+ private:
+
+  Status ExtendMmapSize() {
+    size_t oldcap = cap_;
+    size_t newcap = AlignBackward(oldcap + (oldcap >> 1), page_size_);
+    if(newcap < page_size_) {
+      newcap = page_size_;
+    }
+    if(ftruncate(fd_, newcap) < 0){
+      status_ = Status::IOError("failed to truncate file");
+      return status_;
+    }
+
+    // TODO: lock
+    if(newcap > reserved_) {
+      ::munmap(mmap_base_, reserved_);
+      reserved_ = reserved_ << 1;
+      mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,
+                                 MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+      if(mmap_base_==MAP_FAILED){
+        status_ = Status::IOError("failed to mmap reserved space");
+        return status_;
+      }
+      printf("[LOG] Extended reserved space from %lu to %lu\n", reserved_>>1, reserved_);
+      oldcap = 0;
+    }
+
+    char* addr = (char*)::mmap(mmap_base_ + oldcap, newcap - oldcap, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd_, oldcap);
+    if(addr==MAP_FAILED || addr != mmap_base_ + oldcap){
+      status_ = Status::IOError("failed to mmap file to reserved space");
+      return status_;
+    }
+
+    printf("[LOG] Extended file mapping from %lu to %lu\n", oldcap, newcap);
+    cap_ = newcap;
+    return status_;
+  }
+
+  Status status_;
+  const size_t page_size_;
+  const std::string filename_;
+  char* mmap_base_;
+  std::atomic<size_t> len_;   // file used length
+  size_t prev_sync_;   // previous sync point
+  size_t cap_;   // file mapped length
+  size_t reserved_; // mmap reserved
+  int fd_;
+};
+
 int LockOrUnlock(int fd, bool lock) {
   errno = 0;
   struct ::flock file_lock_info;
@@ -596,6 +748,22 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
+  Status NewAppendableRandomAccessFile(const std::string& filename,
+                                       AppendableRandomAccessFile** result) override {
+    int fd = ::open(filename.c_str(),
+                    O_APPEND | O_RDWR | O_CREAT | kOpenBaseFlags, 0644);
+    if (fd < 0) {
+      *result = nullptr;
+      return PosixError(filename, errno);
+    }
+    uint64_t file_size;
+    Status status = GetFileSize(filename, &file_size);
+    if(status.ok()){
+      *result = new PosixMmapAppendableFile(filename, file_size, 32768, fd);
+    }
+    return Status::OK();
+  }
+
   bool FileExists(const std::string& filename) override {
     return ::access(filename.c_str(), F_OK) == 0;
   }
@@ -695,6 +863,10 @@ class PosixEnv : public Env {
                    void* thread_main_arg) override {
     std::thread new_thread(thread_main, thread_main_arg);
     new_thread.detach();
+  }
+
+  size_t PageSize() const override {
+    return getpagesize();
   }
 
   Status GetTestDirectory(std::string* result) override {

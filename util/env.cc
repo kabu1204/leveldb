@@ -34,6 +34,8 @@ RandomAccessFile::~RandomAccessFile() = default;
 
 WritableFile::~WritableFile() = default;
 
+AppendableRandomAccessFile::~AppendableRandomAccessFile() = default;
+
 Logger::~Logger() = default;
 
 FileLock::~FileLock() = default;

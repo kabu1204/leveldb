@@ -47,6 +47,7 @@ class RandomAccessFile;
 class SequentialFile;
 class Slice;
 class WritableFile;
+class AppendableRandomAccessFile;
 
 class LEVELDB_EXPORT Env {
  public:
@@ -109,6 +110,13 @@ class LEVELDB_EXPORT Env {
   // an Env that does not support appending.
   virtual Status NewAppendableFile(const std::string& fname,
                                    WritableFile** result);
+
+  virtual Status NewAppendableRandomAccessFile(const std::string& filename,
+                                       AppendableRandomAccessFile** result){
+    return Status::OK();
+  }
+
+  virtual size_t PageSize() const = 0;
 
   // Returns true iff the named file exists.
   virtual bool FileExists(const std::string& fname) = 0;
@@ -289,6 +297,16 @@ class LEVELDB_EXPORT WritableFile {
   virtual Status Sync() = 0;
 };
 
+class LEVELDB_EXPORT AppendableRandomAccessFile: public RandomAccessFile, public WritableFile{
+ public:
+  AppendableRandomAccessFile() = default;
+
+  AppendableRandomAccessFile(const AppendableRandomAccessFile&) = delete;
+  AppendableRandomAccessFile& operator=(const AppendableRandomAccessFile&) = delete;
+
+  virtual ~AppendableRandomAccessFile();
+};
+
 // An interface for writing log messages.
 class LEVELDB_EXPORT Logger {
  public:
@@ -354,6 +372,14 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
   }
   Status NewAppendableFile(const std::string& f, WritableFile** r) override {
     return target_->NewAppendableFile(f, r);
+  }
+  size_t PageSize() const override {
+    return target_->PageSize();
+  }
+  Status NewAppendableRandomAccessFile(const std::string& filename,
+                                               AppendableRandomAccessFile** result) override
+  {
+    return target_->NewAppendableRandomAccessFile(filename, result);
   }
   bool FileExists(const std::string& f) override {
     return target_->FileExists(f);
