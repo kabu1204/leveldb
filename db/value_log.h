@@ -12,51 +12,49 @@
 #include "leveldb/status.h"
 #include "leveldb/env.h"
 #include "table/format.h"
+#include "table/vlog.h"
 #include "port/port.h"
 
 namespace leveldb {
 
-
 struct VLogFileMeta {
+  VLogFileMeta(){}
+
   int refs{0};
-  uint32_t number{0};
+  uint64_t number;
   uint64_t file_size{0};
 };
 
+// thread-safe
 class ValueLog {
  public:
-  explicit ValueLog(const Options& options);
+  explicit ValueLog(const Options& options, const std::string& dbname);
 
   ~ValueLog();
 
   ValueLog(const ValueLog&) = delete;
   ValueLog& operator=(const ValueLog&) = delete;
 
-  virtual Status Add(const WriteOptions& options, const Slice& key, const Slice& value);
+  virtual Status Add(const WriteOptions& options, const Slice& key, const Slice& value,
+                     ValueHandle* handle);
 
   virtual Status Get(const ReadOptions& options, const ValueHandle& handle, std::string* value);
 
  protected:
+  uint64_t NewFileNumber() { return vlog_file_number++; }
+
   port::Mutex mutex_;
   Options options_;
-//  std::deque<VLogFileMeta*> files_;
-//  std::atomic<bool> shutdown_{false};
-};
+  Env* const env_;
+  const std::string dbname_;
+  std::atomic<bool> shutdown_{false};
 
-class ValueLogSingle: public ValueLog {
-  explicit ValueLogSingle(const Options& options);
+  AppendableRandomAccessFile* rw_file_; // the file that currently being built
+  VLogBuilder* builder_;  // associated with rw_file_
+  VLogReader* reader_;    // associated with rw_file_
 
-  ~ValueLogSingle();
-
-  ValueLogSingle(const ValueLogSingle&) = delete;
-  ValueLogSingle& operator=(const ValueLogSingle&) = delete;
-
-  Status Add(const WriteOptions& options, const Slice& key, const Slice& value);
-
-  Status Get(const ReadOptions& options, const ValueHandle& handle, std::string* value);
-
- private:
-  RandomAccessFile* file_;
+  std::deque<VLogFileMeta> ro_files_;  // read-only vlog files
+  uint64_t vlog_file_number{0};
 };
 
 }  // namespace leveldb

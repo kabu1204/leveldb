@@ -10,24 +10,24 @@
 
 #include "db/dbformat.h"
 #include "leveldb/cache.h"
-#include "table/value_table.h"
+#include "table/vlog.h"
 #include "port/port.h"
 
 namespace leveldb {
 
 class Env;
 
-class ValueTableCache {
+class VLogCache {
  public:
-  ValueTableCache(const std::string& dbname, const Options& options, int entries);
+  VLogCache(const std::string& dbname, const Options& options, int entries);
 
-  ValueTableCache(const ValueTableCache&) = delete;
-  ValueTableCache& operator=(const ValueTableCache&) = delete;
+  VLogCache(const VLogCache&) = delete;
+  VLogCache& operator=(const VLogCache&) = delete;
 
-  ~ValueTableCache();
+  ~VLogCache();
 
   Iterator* NewIterator(const ReadOptions& options, uint64_t file_number,
-                        uint64_t file_size, ValueTable** tableptr = nullptr);
+                        uint64_t file_size, VLogReader** reader = nullptr);
 
   Status Get(const ReadOptions& options, uint64_t file_number,
              uint64_t file_size, const Slice& k, void* arg,
@@ -37,7 +37,7 @@ class ValueTableCache {
   void Evict(uint64_t file_number);
 
  private:
-  Status FindTable(uint64_t file_number, uint64_t file_size, Cache::Handle** handle);
+  Status FindReader(uint64_t file_number, uint64_t file_size, Cache::Handle** handle);
 
   Env* const env_;
   const std::string dbname_;

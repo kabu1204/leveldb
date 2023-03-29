@@ -145,6 +145,9 @@ struct LEVELDB_EXPORT Options {
   //  1. store value in ValueLog
   //  2. store <key, ValueHandle> in LSMTree
   bool use_vlog = false;
+
+  // soft limit of vlog file size
+  size_t max_vlog_file_size = 32 << 20;
 };
 
 // Options that control read operations

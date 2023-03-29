@@ -144,11 +144,12 @@ void ValueHandle::EncodeTo(std::string* dst){
   PutVarint32(dst, table_);
   PutVarint32(dst, block_);
   PutVarint32(dst, offset_);
+  PutVarint32(dst, size_);
 }
 
 Status ValueHandle::DecodeFrom(Slice* input){
   if (GetVarint32(input, &table_) && GetVarint32(input, &block_)
-      && GetVarint32(input, &offset_))
+      && GetVarint32(input, &offset_) && GetVarint32(input, &size_))
   {
     return Status::OK();
   } else {

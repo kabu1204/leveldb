@@ -20,6 +20,7 @@
 #include "table/format.h"
 #include "table/value_table.h"
 #include "table/value_block.h"
+#include "table/vlog.h"
 #include "util/random.h"
 #include "util/testutil.h"
 
@@ -115,6 +116,39 @@ class StringSource : public RandomAccessFile {
 
   ~StringSource() override = default;
 
+  uint64_t Size() const { return contents_.size(); }
+
+  Status Read(uint64_t offset, size_t n, Slice* result,
+              char* scratch) const override {
+    if (offset >= contents_.size()) {
+      return Status::InvalidArgument("invalid Read offset");
+    }
+    if (offset + n > contents_.size()) {
+      n = contents_.size() - offset;
+    }
+    std::memcpy(scratch, &contents_[offset], n);
+    *result = Slice(scratch, n);
+    return Status::OK();
+  }
+
+ private:
+  std::string contents_;
+};
+
+class StringSinkSource: public AppendableRandomAccessFile {
+ public:
+  ~StringSinkSource() override = default;
+
+  const std::string& contents() const { return contents_; }
+
+  Status Close() override { return Status::OK(); }
+  Status Flush() override { return Status::OK(); }
+  Status Sync() override { return Status::OK(); }
+
+  Status Append(const Slice& data) override {
+    contents_.append(data.data(), data.size());
+    return Status::OK();
+  }
   uint64_t Size() const { return contents_.size(); }
 
   Status Read(uint64_t offset, size_t n, Slice* result,
@@ -340,6 +374,49 @@ class ValueTableConstructor : public Constructor {
   ValueTable* table_;
 
   ValueTableConstructor();
+};
+
+class VLogConstructor: public Constructor {
+ public:
+  VLogConstructor(const Comparator* cmp)
+      : Constructor(cmp), source_(nullptr), table_(nullptr) {}
+  ~VLogConstructor() override { Reset(); }
+  Status FinishImpl(const Options& options, const KVMap& data) override {
+    Reset();
+    source_ = new StringSinkSource;
+    VLogBuilder builder(options, source_);
+
+    for (const auto& kvp : data) {
+      builder.Add(kvp.first, kvp.second);
+      EXPECT_LEVELDB_OK(builder.status());
+    }
+    Status s = builder.Finish();
+    EXPECT_LEVELDB_OK(s);
+
+    EXPECT_EQ(source_->contents().size(), builder.FileSize());
+
+    // Open the table
+    Options table_options;
+    table_options.comparator = options.comparator;
+    return VLogReader::Open(table_options, source_, source_->contents().size(), &table_);
+  }
+
+  Iterator* NewIterator() const override {
+    return table_->NewIterator(ReadOptions());
+  }
+
+ private:
+  void Reset() {
+    delete table_;
+    delete source_;
+    table_ = nullptr;
+    source_ = nullptr;
+  }
+
+  StringSinkSource* source_;
+  VLogReader* table_;
+
+  VLogConstructor();
 };
 
 // A helper class that converts internal format keys into user keys
@@ -982,6 +1059,78 @@ TEST(ValueTableTest, Sample){
 
   handle.block_ = 3;
   handle.offset_ = 1;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k07");
+
+  delete iter;
+}
+
+TEST(VLogTest, Sample){
+  VLogConstructor c(BytewiseComparator());
+  c.Add("k01", "hello");  // offset 0
+  c.Add("k02", "hello2");  // offset 10
+  c.Add("k03", std::string(10000, 'x'));  // offset 21
+  c.Add("k04", std::string(200000, 'x'));  // offset 10027
+  c.Add("k05", std::string(300000, 'x'));  // offset 210034
+  c.Add("k06", "hello3");  // offset 510041
+  c.Add("k07", std::string(100000, 'x'));  // offset 510052
+  std::vector<std::string> keys;
+  KVMap kvmap;
+  Options options;
+  options.block_size = 1024;
+  options.compression = kSnappyCompression;
+  c.Finish(options, &keys, &kvmap);
+
+  Iterator* iter = c.NewIterator();
+  int n = 0;
+  for(iter->SeekToFirst(); iter->Valid(); iter->Next(), n++){
+    ASSERT_EQ(iter->value().ToString(), kvmap[iter->key().ToString()]);
+  }
+  ASSERT_EQ(n, kvmap.size());
+
+  ValueHandle handle;
+  std::string handle_encoding;
+  handle.size_ = 0;
+  handle.offset_ = 0;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k01");
+
+  handle.offset_ = 10;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k02");
+
+  handle.offset_ = 21;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k03");
+
+  handle.offset_ = 10027;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k04");
+
+  handle.offset_ = 210034;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k05");
+
+  handle.offset_ = 510041;
+  handle.EncodeTo(&handle_encoding);
+  iter->Seek(handle_encoding);
+  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
+  ASSERT_EQ(iter->key(), "k06");
+
+  handle.offset_ = 510052;
+  handle.size_ = 100007;
   handle.EncodeTo(&handle_encoding);
   iter->Seek(handle_encoding);
   ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);

@@ -6,14 +6,14 @@
 
 #include "db/filename.h"
 #include "leveldb/env.h"
-#include "table/value_table.h"
+#include "table/vlog.h"
 #include "util/coding.h"
 
 namespace leveldb {
 
 struct TableAndFile {
   RandomAccessFile* file;
-  ValueTable* table;
+  VLogReader* table;
 };
 
 static void DeleteEntry(const Slice& key, void* value) {
@@ -29,7 +29,7 @@ static void UnrefEntry(void* arg1, void* arg2) {
   cache->Release(h);
 }
 
-ValueTableCache::ValueTableCache(const std::string& dbname,
+VLogCache::VLogCache(const std::string& dbname,
                                  const Options& options, int entries)
     : env_(options.env),
       dbname_(dbname),
@@ -37,51 +37,51 @@ ValueTableCache::ValueTableCache(const std::string& dbname,
       cache_(NewLRUCache(entries))
 {}
 
-ValueTableCache::~ValueTableCache() { delete cache_; }
+VLogCache::~VLogCache() { delete cache_; }
 
-Iterator* ValueTableCache::NewIterator(const ReadOptions& options,
+Iterator* VLogCache::NewIterator(const ReadOptions& options,
                                        uint64_t file_number, uint64_t file_size,
-                                       ValueTable** tableptr) {
-  if(tableptr != nullptr){
-    *tableptr = nullptr;
+                                       VLogReader** reader) {
+  if(reader != nullptr){
+    *reader = nullptr;
   }
 
   Cache::Handle* handle = nullptr;
-  Status s = FindTable(file_number, file_size, &handle);
+  Status s = FindReader(file_number, file_size, &handle);
   if(!s.ok()){
     return NewErrorIterator(s);
   }
 
-  ValueTable* table = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
-  Iterator* result = table->NewIterator(options);
+  VLogReader* t = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+  Iterator* result = t->NewIterator(options);
   result->RegisterCleanup(&UnrefEntry, cache_, handle);
-  if(tableptr != nullptr) {
-    *tableptr = table;
+  if(reader != nullptr) {
+    *reader = t;
   }
   return result;
 }
 
-Status ValueTableCache::Get(const ReadOptions& options, uint64_t file_number,
+Status VLogCache::Get(const ReadOptions& options, uint64_t file_number,
                             uint64_t file_size, const Slice& k, void* arg,
                             void (*handle_result)(void*, const Slice&,
                                                   const Slice&)) {
   Cache::Handle* handle = nullptr;
-  Status s = FindTable(file_number, file_size, &handle);
+  Status s = FindReader(file_number, file_size, &handle);
   if (s.ok()) {
-    ValueTable* t = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+    VLogReader* t = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
     s = t->InternalGet(options, k, arg, handle_result);
     cache_->Release(handle);
   }
   return s;
 }
 
-void ValueTableCache::Evict(uint64_t file_number) {
+void VLogCache::Evict(uint64_t file_number) {
     char buf[sizeof(file_number)];
     EncodeFixed64(buf, file_number);
     cache_->Erase(Slice(buf, sizeof(buf)));
 }
 
-Status ValueTableCache::FindTable(uint64_t file_number, uint64_t file_size,
+Status VLogCache::FindReader(uint64_t file_number, uint64_t file_size,
                                   Cache::Handle** handle) {
   Status s;
   char buf[sizeof(file_number)];
@@ -89,21 +89,21 @@ Status ValueTableCache::FindTable(uint64_t file_number, uint64_t file_size,
   Slice key(buf, sizeof(buf));
   *handle = cache_->Lookup(key);
   if(*handle == nullptr) {
-    std::string fname = ValueTableFileName(dbname_, file_number);
+    std::string fname = VLogFileName(dbname_, file_number);
     RandomAccessFile* file = nullptr;
-    ValueTable* table = nullptr;
+    VLogReader* reader = nullptr;
     s = env_->NewRandomAccessFile(fname, &file);
     if(s.ok()){
-      s = ValueTable::Open(options_, file, file_size, &table);
+      s = VLogReader::Open(options_, file, file_size, &reader);
     }
 
     if(!s.ok()) {
-      assert(table == nullptr);
+      assert(reader == nullptr);
       delete file;
     } else {
       TableAndFile* tf = new TableAndFile;
       tf->file = file;
-      tf->table = table;
+      tf->table = reader;
       *handle = cache_->Insert(key, tf, 1, &DeleteEntry);
     }
   }

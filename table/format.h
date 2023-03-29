@@ -96,7 +96,7 @@ inline BlockHandle::BlockHandle()
 
 /*
  * ValueHandle is a logical pointer with
- * format <value_table_id, block_id, offset>
+ * format <value_table_id, block_id, offset, size>
  * Notice: offset_ is a logical offset, which is actually
  * entry_idx.
  */
@@ -105,11 +105,13 @@ class ValueHandle {
   uint32_t table_;
   uint32_t block_;
   uint32_t offset_;
+  uint32_t size_;
   ValueHandle() = default;
-  ValueHandle(uint32_t table_id, uint32_t block_id, uint32_t offset)
+  ValueHandle(uint32_t table_id, uint32_t block_id, uint32_t offset, uint32_t size)
       : table_(table_id),
         block_(block_id),
-        offset_(offset)
+        offset_(offset),
+        size_(size)
   {}
   void EncodeTo(std::string* dst);
   Status DecodeFrom(Slice* input);

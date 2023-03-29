@@ -28,6 +28,7 @@ ValueBlock::~ValueBlock() {
     delete[] data_;
   }
 }
+
 uint32_t ValueBlock::NumEntries() const {
   assert(size_ >= sizeof(uint32_t));
   return DecodeFixed32(data_ + size_ - sizeof(uint32_t));
