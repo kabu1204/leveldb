@@ -486,21 +486,22 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
         fd_(fd),
         page_size_(getpagesize())
   {
-    assert(reserved > file_size);
-    assert(!(reserved & (page_size_-1)));
     reserved_ = AlignBackward(std::max<uint64_t>(file_size << 1, reserved),
-        page_size_);  // max(2 * fileSize, reserved)
+                              page_size_);  // max(2 * fileSize, reserved)
 
     mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,
                                MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if(mmap_base_==MAP_FAILED){
+    if (mmap_base_ == MAP_FAILED) {
       status_ = Status::IOError("failed to mmap reserved space");
       printf("[LOG] mmap failed");
       return;
     }
 
+    assert(reserved_ > file_size);
+    assert(!(reserved_ & (page_size_ - 1)));
     ExtendMmapSize();
-    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(), cap_, reserved_);
+    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(), cap_,
+           reserved_);
   }
 
   PosixMmapAppendableFile(const PosixMmapAppendableFile&) = delete;

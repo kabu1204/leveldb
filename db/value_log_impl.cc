@@ -2,21 +2,42 @@
 // Created by 于承业 on 2023/3/22.
 //
 
-#include "db/value_log.h"
+#include "db/value_log_impl.h"
+
 #include "db/filename.h"
+
 #include "table/format.h"
 
 namespace leveldb {
 
-ValueLog::ValueLog(const Options& options, const std::string& dbname)
+ValueLog::~ValueLog() = default;
+
+Status ValueLog::Open(const Options& options, const std::string& dbname,
+                      ValueLog** vlog) {
+  if (vlog != nullptr) {
+    *vlog = nullptr;
+  }
+
+  ValueLogImpl* vlog_impl = new ValueLogImpl(options, dbname);
+  vlog_impl->Recover();
+  *vlog = vlog_impl;
+
+  return Status::OK();
+}
+
+ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname)
     : env_(options.env),
       options_(options),
       dbname_(dbname),
-      vlog_cache_(new VLogCache(dbname_, options, options.max_open_vlogs))
-{}
+      vlog_cache_(new VLogCache(dbname_, options, options.max_open_vlogs)),
+      shutdown_(false),
+      rw_file_(nullptr),
+      builder_(nullptr),
+      reader_(nullptr),
+      vlog_file_number_(0) {}
 
-Status ValueLog::Add(const WriteOptions& options, const Slice& key,
-                     const Slice& value, ValueHandle* handle) {
+Status ValueLogImpl::Add(const WriteOptions& options, const Slice& key,
+                         const Slice& value, ValueHandle* handle) {
   Status s;
   handle->table_ = CurrentFileNumber();
   builder_->Add(key, value, handle);
@@ -25,23 +46,23 @@ Status ValueLog::Add(const WriteOptions& options, const Slice& key,
     s = rw_file_->Sync();
   }
   reader_->IncreaseOffset(builder_->Offset());
-  if(builder_->FileSize() > options_.max_file_size) {
+  if (builder_->FileSize() > options_.max_vlog_file_size) {
     FinishBuild();
     s = NewVLogBuider();
   }
   return s;
 }
 
-Status ValueLog::Get(const ReadOptions& options, const ValueHandle& handle,
-                     std::string* value) {
+Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
+                         std::string* value) {
   if (handle.table_ == 0 || handle.table_ > CurrentFileNumber()) {
     return Status::InvalidArgument("invalid value log number");
   }
   Iterator* iter;
-  if(handle.table_ != CurrentFileNumber()) {
+  if (handle.table_ != CurrentFileNumber()) {
     auto it = ro_files_.find(handle.table_);
     if (it != ro_files_.end()) {
-      if (handle.offset_>=it->second->file_size) {
+      if (handle.offset_ >= it->second->file_size) {
         return Status::InvalidArgument("value log offset is out of limit");
       }
       iter = vlog_cache_->NewIterator(options, handle.table_, it->second->file_size);
@@ -68,15 +89,15 @@ Status ValueLog::Get(const ReadOptions& options, const ValueHandle& handle,
   return Status::OK();
 }
 
-
 /*
- * 1. A process crash before syncing won't hurt. The filesystem will flush the dirty page to the disk.
+ * 1. A process crash before syncing won't hurt. The filesystem will flush the
+ * dirty page to the disk.
  * 2. An OS crash before DB::Put() return won't hurt.
  * 3. An OS crash between VLog::Put() and LSM::Put() won't hurt.
  * 3. An OS crash after DB::Put(sync=true) won't hurt.
  * 5. An OS crash after DB::Put(sync=false) will cause last few records lost.
  */
-Status ValueLog::Recover() {
+Status ValueLogImpl::Recover() {
   Status s;
   std::vector<std::string> fnames;
   uint64_t number;
@@ -85,7 +106,7 @@ Status ValueLog::Recover() {
   // scan over all the .vlog files
   env_->GetChildren(dbname_, &fnames);
   for (std::string& filename : fnames) {
-    if (ParseFileName(filename, &number, &type) && type==kVLogFile) {
+    if (ParseFileName(filename, &number, &type) && type == kVLogFile) {
       vlog_file_number_ = std::max(number, vlog_file_number_);
       VLogFileMeta* f = new VLogFileMeta;
       f->number = number;
@@ -159,7 +180,7 @@ Status ValueLog::Recover() {
   return s;
 }
 
-ValueLog::~ValueLog() {
+ValueLogImpl::~ValueLogImpl() {
   FinishBuild();
   shutdown_.store(true, std::memory_order_release);
   for (auto p : ro_files_) {
@@ -170,7 +191,8 @@ ValueLog::~ValueLog() {
   }
   delete vlog_cache_;
 }
-Status ValueLog::FinishBuild() {
+
+Status ValueLogImpl::FinishBuild() {
   VLogFileMeta* ro_f = new VLogFileMeta;
   builder_->Finish();
   rw_file_->Sync();
@@ -188,11 +210,44 @@ Status ValueLog::FinishBuild() {
   return Status::OK();
 }
 
-Status ValueLog::NewVLogBuider() {
+Status ValueLogImpl::NewVLogBuider() {
   Status s;
-  s = env_->NewAppendableRandomAccessFile(VLogFileName(dbname_, NewFileNumber()), &rw_file_);
+  s = env_->NewAppendableRandomAccessFile(
+      VLogFileName(dbname_, NewFileNumber()), &rw_file_);
   builder_ = new VLogBuilder(options_, rw_file_);
   s = VLogReader::Open(options_, rw_file_, 0, &reader_);
+  return s;
+}
+
+static std::string Bytes2Size(uint64_t size) {
+  /*
+   * [0, 1024B] => B
+   * [1KB, 1MB] => KB
+   *
+   */
+  char buf[100];
+  if (size < (1 << 10)) {
+    snprintf(buf, sizeof(buf), "%llu B", size);
+    return {buf};
+  } else if (size < (1 << 20)) {
+    snprintf(buf, sizeof(buf), "%.2f KB", double(size) / 1024.0);
+  } else if (size < (1 << 30)) {
+    snprintf(buf, sizeof(buf), "%.2f MB", double(size) / (1024.0 * 1024.0));
+  } else {
+    snprintf(buf, sizeof(buf), "%.2f GB",
+             double(size) / (1024.0 * 1024.0 * 1024.0));
+  }
+  return buf;
+}
+
+std::string ValueLogImpl::DebugString() {
+  std::string s = "=========Value Log==========\n";
+  s.append(VLogFileName("", CurrentFileNumber()).erase(0, 1) + ":\t" +
+           Bytes2Size(builder_->FileSize()) + " (current)\n");
+  for (auto f : ro_files_) {
+    s.append(VLogFileName("", f.second->number).erase(0, 1) + ":\t" +
+             Bytes2Size(f.second->file_size) + "\n");
+  }
   return s;
 }
 

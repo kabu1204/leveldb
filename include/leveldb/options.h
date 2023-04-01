@@ -142,7 +142,7 @@ struct LEVELDB_EXPORT Options {
   const FilterPolicy* filter_policy = nullptr;
 
   // If true, separate key-value pairs:
-  //  1. store value in ValueLog
+  //  1. store value in ValueLogImpl
   //  2. store <key, ValueHandle> in LSMTree
   bool use_vlog = false;
 
