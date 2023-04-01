@@ -375,6 +375,11 @@ class InMemoryEnv : public EnvWrapper {
     return Status::OK();
   }
 
+  virtual Status NewStdLogger(Logger** result) override {
+    *result = new NoOpLogger;
+    return Status::OK();
+  }
+
  private:
   // Map from filenames to FileState objects, representing a simple file system.
   typedef std::map<std::string, FileState*> FileSystem;

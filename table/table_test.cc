@@ -387,7 +387,7 @@ class VLogConstructor: public Constructor {
     VLogBuilder builder(options, source_);
 
     for (const auto& kvp : data) {
-      builder.Add(kvp.first, kvp.second);
+      builder.Add(kvp.first, kvp.second, nullptr);
       EXPECT_LEVELDB_OK(builder.status());
     }
     Status s = builder.Finish();
@@ -403,6 +403,10 @@ class VLogConstructor: public Constructor {
 
   Iterator* NewIterator() const override {
     return table_->NewIterator(ReadOptions());
+  }
+
+  VLogReader* GetReader() const {
+    return table_;
   }
 
  private:
@@ -1135,6 +1139,11 @@ TEST(VLogTest, Sample){
   iter->Seek(handle_encoding);
   ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
   ASSERT_EQ(iter->key(), "k07");
+
+  uint64_t off, num;
+  ASSERT_TRUE(c.GetReader()->Validate(&off, &num));
+  ASSERT_EQ(off, 610059);
+  ASSERT_EQ(num, 7);
 
   delete iter;
 }

@@ -24,16 +24,22 @@ struct VLogBuilder::Rep {
 };
 
 VLogBuilder::VLogBuilder(const Options& options,
-                         AppendableRandomAccessFile* file)
+                         AppendableRandomAccessFile* file, bool reuse,
+                         uint32_t offset, uint32_t num_entries)
     : rep_(new Rep(options, file))
-{}
+{
+  if (reuse) {
+    rep_->offset = offset;
+    rep_->num_entries = num_entries;
+  }
+}
 
 VLogBuilder::~VLogBuilder() {
   assert(rep_->closed);
   delete rep_;
 }
 
-void VLogBuilder::Add(const Slice& key, const Slice& value) {
+void VLogBuilder::Add(const Slice& key, const Slice& value, ValueHandle* handle) {
   assert(!rep_->closed);
   if(!ok()) return;
   uint32_t size = key.size() + value.size();
@@ -52,6 +58,10 @@ void VLogBuilder::Add(const Slice& key, const Slice& value) {
     return;
   }
 
+  if (handle != nullptr) {
+    handle->offset_ = rep_->offset;
+    handle->size_ = size;
+  }
   rep_->offset += size;
   rep_->num_entries++;
 }
@@ -116,9 +126,7 @@ Status VLogReader::Open(const Options& options, RandomAccessFile* file,
   if(reader != nullptr) {
     *reader = nullptr;
   }
-  if(file_size < 2) {
-    return Status::Corruption("file is too short to be a value table");
-  }
+
   Rep *rep = new Rep(options, file, file_size);
   *reader = new VLogReader(rep);
 
@@ -131,6 +139,7 @@ VLogReader::~VLogReader() {
 
 class VLogReader::Iter : public Iterator {
  private:
+  friend class VLogReader;
   const RandomAccessFile* const file_;
   const uint32_t limit_;
   uint32_t current_{0};
@@ -139,6 +148,7 @@ class VLogReader::Iter : public Iterator {
   std::string key_;
   Slice value_;
   uint32_t parsed_entry_size_;
+  bool valid_{false};
 
   bool ParseCurrentEntry(uint32_t size = 0){
     if(current_ >= limit_) return false;
@@ -190,16 +200,16 @@ class VLogReader::Iter : public Iterator {
       : file_(file),
         limit_(limit) {}
 
-  bool Valid() const override { return current_ < limit_; }
+  bool Valid() const override { return valid_; }
 
   void SeekToFirst() override {
     current_ = 0;
-    ParseCurrentEntry();
+    valid_ = ParseCurrentEntry();
   }
 
   void SeekToLast() override {
     uint32_t prev;
-    if(!Valid()) {
+    if(current_ >= limit_) {
       SeekToFirst();
     }
     prev = current_;
@@ -207,7 +217,7 @@ class VLogReader::Iter : public Iterator {
       prev = current_;
     }
     current_ = prev;
-    ParseCurrentEntry();
+    valid_ = ParseCurrentEntry();
   }
 
   void Seek(const Slice& target) override {
@@ -215,17 +225,18 @@ class VLogReader::Iter : public Iterator {
     Slice input = target;
     status_ = handle.DecodeFrom(&input);
     current_ = handle.offset_;
-    ParseCurrentEntry(handle.size_);
+    valid_ = ParseCurrentEntry(handle.size_);
   }
 
   void Next() override {
-    assert(Valid());
+    assert(current_ < limit_);
     current_ += parsed_entry_size_;
-    ParseCurrentEntry();
+    valid_ = ParseCurrentEntry();
   }
 
   void Prev() override {
     status_ = Status::NotSupported("vlog iterator does not support iterating reversely");
+    valid_ = false;
   }
 
   Slice key() const override { return {key_.data(), key_.size()}; }
@@ -259,6 +270,21 @@ Status VLogReader::InternalGet(const ReadOptions& option, const Slice& key, void
   }
   delete iter;
   return s;
+}
+
+bool VLogReader::Validate(uint64_t* offset, uint64_t* num_entries) {
+  Iter* iter = static_cast<Iter*>(NewIterator(ReadOptions()));
+  assert(iter != nullptr);
+  *offset = 0;
+  *num_entries = 0;
+  uint64_t n = 0;
+  for(iter->SeekToFirst(); iter->Valid(); iter->Next()){
+    n++;
+  }
+  *offset = iter->current_;
+  *num_entries = n;
+  delete iter;
+  return *offset == rep_->limit;
 }
 
 }  // namespace leveldb

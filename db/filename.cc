@@ -25,6 +25,10 @@ static std::string MakeFileName(const std::string& dbname, uint64_t number,
   return dbname + buf;
 }
 
+std::string DBFilePath(const std::string& dbname, const std::string& fname) {
+  return dbname + "/" + fname;
+}
+
 std::string LogFileName(const std::string& dbname, uint64_t number) {
   assert(number > 0);
   return MakeFileName(dbname, number, "log");
@@ -119,6 +123,8 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
       *type = kTableFile;
     } else if (suffix == Slice(".dbtmp")) {
       *type = kTempFile;
+    } else if (suffix == Slice(".vlog")) {
+      *type = kVLogFile;
     } else {
       return false;
     }

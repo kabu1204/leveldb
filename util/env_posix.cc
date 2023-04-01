@@ -480,7 +480,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
                           int fd)
       : filename_(std::move(filename)),
         len_(file_size),
-        cap_(file_size),
+        cap_(0),
         reserved_(reserved),
         prev_sync_(0),
         fd_(fd),
@@ -488,17 +488,19 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
   {
     assert(reserved > file_size);
     assert(!(reserved & (page_size_-1)));
-    cap_ = AlignBackward(cap_ + (cap_>>1), page_size_);
-    reserved_ = AlignBackward(std::max<uint64_t>(cap_ << 1, reserved), page_size_);
+    reserved_ = AlignBackward(std::max<uint64_t>(file_size << 1, reserved),
+        page_size_);  // max(2 * fileSize, reserved)
 
     mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,
                                MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if(mmap_base_==MAP_FAILED){
       status_ = Status::IOError("failed to mmap reserved space");
+      printf("[LOG] mmap failed");
       return;
     }
 
     ExtendMmapSize();
+    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(), cap_, reserved_);
   }
 
   PosixMmapAppendableFile(const PosixMmapAppendableFile&) = delete;
@@ -572,6 +574,9 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
   Status ExtendMmapSize() {
     size_t oldcap = cap_;
     size_t newcap = AlignBackward(oldcap + (oldcap >> 1), page_size_);
+    if (newcap < len_) {
+      newcap = AlignBackward(len_ + (len_>>1), page_size_); // 1.5 * len_
+    }
     if(newcap < page_size_) {
       newcap = page_size_;
     }
@@ -759,8 +764,22 @@ class PosixEnv : public Env {
     uint64_t file_size;
     Status status = GetFileSize(filename, &file_size);
     if(status.ok()){
-      *result = new PosixMmapAppendableFile(filename, file_size, 32768, fd);
+      uint64_t reserved = std::max<uint64_t>(file_size<<1, 8 << 20);
+      *result = new PosixMmapAppendableFile(filename, file_size, reserved, fd);
     }
+    return Status::OK();
+  }
+
+  Status TruncateFile(const std::string& filename, uint64_t fileSize) override {
+    int fd = ::open(filename.c_str(), O_WRONLY | kOpenBaseFlags, 0644);
+    if (fd < 0) {
+      return PosixError(filename, errno);
+    }
+    if (ftruncate(fd, fileSize) < 0) {
+      close(fd);
+      return PosixError(filename, errno);
+    }
+    close(fd);
     return Status::OK();
   }
 
@@ -903,6 +922,11 @@ class PosixEnv : public Env {
       *result = new PosixLogger(fp);
       return Status::OK();
     }
+  }
+
+  virtual Status NewStdLogger(Logger** result) override {
+    *result = new PosixLogger(stdout);
+    return Status::OK();
   }
 
   uint64_t NowMicros() override {

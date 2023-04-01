@@ -16,7 +16,8 @@ namespace leveldb {
 
 class VLogBuilder {
  public:
-  VLogBuilder(const Options& options, AppendableRandomAccessFile* file);
+  VLogBuilder(const Options& options, AppendableRandomAccessFile* file,
+              bool reuse = false, uint32_t offset = 0, uint32_t num_entries = 0);
 
   VLogBuilder(const VLogBuilder&) = delete;
   VLogBuilder& operator=(const VLogBuilder&) = delete;
@@ -24,7 +25,7 @@ class VLogBuilder {
   ~VLogBuilder();
 
   // Add a record to the file_ in append-only manner
-  void Add(const Slice& key, const Slice& value);
+  void Add(const Slice& key, const Slice& value, ValueHandle* handle);
 
   void Flush();
 
@@ -58,6 +59,13 @@ class VLogReader {
   ~VLogReader();
 
   Iterator* NewIterator(const ReadOptions&) const;
+
+  /*
+   * Iterate through the file, stop when !iter->Valid(),
+   * storing the validated size and num_entries of the file in the arguments.
+   * return false when *offset != fileSize.
+   */
+  bool Validate(uint64_t* offset, uint64_t* num_entries);
 
   void IncreaseOffset(uint32_t new_offset);
 

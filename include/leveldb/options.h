@@ -148,6 +148,9 @@ struct LEVELDB_EXPORT Options {
 
   // soft limit of vlog file size
   size_t max_vlog_file_size = 32 << 20;
+
+  // max opened vlog files
+  size_t max_open_vlogs = 1000;
 };
 
 // Options that control read operations

@@ -261,6 +261,7 @@ void DBImpl::RemoveObsoleteFiles() {
           // be recorded in pending_outputs_, which is inserted into "live"
           keep = (live.find(number) != live.end());
           break;
+        case kVLogFile:
         case kCurrentFile:
         case kDBLockFile:
         case kInfoLogFile:

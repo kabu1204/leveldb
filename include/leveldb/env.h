@@ -116,6 +116,10 @@ class LEVELDB_EXPORT Env {
     return Status::OK();
   }
 
+  virtual Status TruncateFile(const std::string& filename, uint64_t fileSize){
+    return Status::NotSupported("not implemented");
+  }
+
   virtual size_t PageSize() const = 0;
 
   // Returns true iff the named file exists.
@@ -217,6 +221,8 @@ class LEVELDB_EXPORT Env {
 
   // Create and return a log file for storing informational messages.
   virtual Status NewLogger(const std::string& fname, Logger** result) = 0;
+
+  virtual Status NewStdLogger(Logger** result) = 0;
 
   // Returns the number of micro-seconds since some fixed point in time. Only
   // useful for computing deltas of time.
@@ -381,6 +387,11 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
   {
     return target_->NewAppendableRandomAccessFile(filename, result);
   }
+
+  Status TruncateFile(const std::string& filename, uint64_t fileSize) override {
+    return target_->TruncateFile(filename, fileSize);
+  }
+
   bool FileExists(const std::string& f) override {
     return target_->FileExists(f);
   }
@@ -418,6 +429,9 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
   }
   Status NewLogger(const std::string& fname, Logger** result) override {
     return target_->NewLogger(fname, result);
+  }
+  Status NewStdLogger(Logger** result) override {
+    return target_->NewStdLogger(result);
   }
   uint64_t NowMicros() override { return target_->NowMicros(); }
   void SleepForMicroseconds(int micros) override {

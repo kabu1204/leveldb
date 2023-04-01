@@ -7,7 +7,10 @@
 
 #include <vector>
 #include <deque>
+#include <set>
+#include <map>
 
+#include "db/value_table_cache.h"
 #include "leveldb/options.h"
 #include "leveldb/status.h"
 #include "leveldb/env.h"
@@ -35,13 +38,30 @@ class ValueLog {
   ValueLog(const ValueLog&) = delete;
   ValueLog& operator=(const ValueLog&) = delete;
 
-  virtual Status Add(const WriteOptions& options, const Slice& key, const Slice& value,
+  Status Add(const WriteOptions& options, const Slice& key, const Slice& value,
                      ValueHandle* handle);
 
-  virtual Status Get(const ReadOptions& options, const ValueHandle& handle, std::string* value);
+  Status Get(const ReadOptions& options, const ValueHandle& handle, std::string* value);
 
- protected:
-  uint64_t NewFileNumber() { return vlog_file_number++; }
+  Status Recover();
+
+ private:
+  uint64_t NewFileNumber() { return ++vlog_file_number_; }
+  uint64_t CurrentFileNumber() const { return vlog_file_number_; }
+  void ReuseFileNumber(uint64_t number) {
+    if (number == CurrentFileNumber() + 1){
+      vlog_file_number_ = number;
+    }
+  }
+
+  Status FinishBuild();
+  Status NewVLogBuider();
+
+  struct ByFileNumber {
+    bool operator()(VLogFileMeta* lhs, VLogFileMeta* rhs) const {
+      return lhs->number < rhs->number;
+    }
+  };
 
   port::Mutex mutex_;
   Options options_;
@@ -53,8 +73,10 @@ class ValueLog {
   VLogBuilder* builder_;  // associated with rw_file_
   VLogReader* reader_;    // associated with rw_file_
 
-  std::deque<VLogFileMeta> ro_files_;  // read-only vlog files
-  uint64_t vlog_file_number{0};
+//  std::set<VLogFileMeta*, ByFileNumber> ro_files_;
+  std::map<uint64_t, VLogFileMeta*> ro_files_;  // read-only vlog files
+  uint64_t vlog_file_number_{0};
+  VLogCache* const vlog_cache_;
 };
 
 }  // namespace leveldb

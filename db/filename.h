@@ -22,6 +22,7 @@ enum FileType {
   kLogFile,
   kDBLockFile,
   kTableFile,
+  kVLogFile,
   kDescriptorFile,
   kCurrentFile,
   kTempFile,
@@ -32,6 +33,8 @@ enum FileType {
 // in the db named by "dbname".  The result will be prefixed with
 // "dbname".
 std::string LogFileName(const std::string& dbname, uint64_t number);
+
+std::string DBFilePath(const std::string& dbname, const std::string& fname);
 
 // Return the name of the sstable with the specified number
 // in the db named by "dbname".  The result will be prefixed with

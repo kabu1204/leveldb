@@ -333,6 +333,7 @@ if(LEVELDB_BUILD_TESTS)
   if(NOT BUILD_SHARED_LIBS)
     target_sources(leveldb_tests
       PRIVATE
+        "db/value_log_test.cc"
         "db/autocompact_test.cc"
         "db/corruption_test.cc"
         "db/db_test.cc"

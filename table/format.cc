@@ -138,7 +138,7 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   return Status::OK();
 }
 
-void ValueHandle::EncodeTo(std::string* dst){
+void ValueHandle::EncodeTo(std::string* dst) const {
   assert(dst != nullptr);
   dst->clear();
   PutVarint32(dst, table_);
