@@ -6,7 +6,8 @@
 
 #include "db/filename.h"
 
-#include "table/format.h"
+#include "port/port.h"
+#include "util/mutexlock.h"
 
 namespace leveldb {
 
@@ -39,22 +40,24 @@ ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname)
 Status ValueLogImpl::Add(const WriteOptions& options, const Slice& key,
                          const Slice& value, ValueHandle* handle) {
   Status s;
+  WriteLock l(&rwlock_);
   handle->table_ = CurrentFileNumber();
   builder_->Add(key, value, handle);
   builder_->Flush();
   if (options.sync) {
-    s = rw_file_->Sync();
+    s = rw_file_->Sync();  // expensive
   }
   reader_->IncreaseOffset(builder_->Offset());
   if (builder_->FileSize() > options_.max_vlog_file_size) {
-    FinishBuild();
-    s = NewVLogBuider();
+    FinishBuild();         // expensive
+    s = NewVLogBuilder();  // expensive
   }
   return s;
 }
 
 Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
                          std::string* value) {
+  ReadLock l(&rwlock_);
   if (handle.table_ == 0 || handle.table_ > CurrentFileNumber()) {
     return Status::InvalidArgument("invalid value log number");
   }
@@ -65,19 +68,20 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
       if (handle.offset_ >= it->second->file_size) {
         return Status::InvalidArgument("value log offset is out of limit");
       }
-      iter = vlog_cache_->NewIterator(options, handle.table_, it->second->file_size);
+      iter = vlog_cache_->NewIterator(options, handle.table_,
+                                      it->second->file_size);
     } else {
       return Status::InvalidArgument("value log number not exists");
     }
   } else {
-    if(handle.offset_ >= builder_->Offset()){
+    if (handle.offset_ >= builder_->Offset()) {
       return Status::InvalidArgument("value log offset is out of limit");
     }
     iter = reader_->NewIterator(options);
   }
   std::string handle_encoding;
   handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
+  iter->Seek(handle_encoding);  // expensive
   if (iter->Valid()) {
     const Slice v = iter->value();
     value->assign(v.data(), v.size());
@@ -98,6 +102,7 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
  * 5. An OS crash after DB::Put(sync=false) will cause last few records lost.
  */
 Status ValueLogImpl::Recover() {
+  WriteLock l(&rwlock_);
   Status s;
   std::vector<std::string> fnames;
   uint64_t number;
@@ -111,9 +116,11 @@ Status ValueLogImpl::Recover() {
       VLogFileMeta* f = new VLogFileMeta;
       f->number = number;
       s = env_->GetFileSize(DBFilePath(dbname_, filename), &f->file_size);
-      Log(options_.info_log, "filename %s: %s", filename.c_str(), s.ToString().c_str());
+      Log(options_.info_log, "filename %s: %s", filename.c_str(),
+          s.ToString().c_str());
       assert(s.ok());
       ro_files_.emplace(number, f);
+      lock_table_.emplace(number, new port::RWSpinLock);
     }
   }
 
@@ -133,12 +140,13 @@ Status ValueLogImpl::Recover() {
     bool valid = reader_->Validate(&offset, &num_entries);
     /*
      * it's not expensive to reopen and re-create once more when recovering a
-     * database, we delete them here and re-create later for better code readability.
+     * database, we delete them here and re-create later for better code
+     * readability.
      */
     delete reader_;
     delete rw_file_;
 
-    if(!valid){
+    if (!valid) {
       /*
        * The file's valid size is smaller than its actual size, repair it by
        * truncating it to the valid size.
@@ -156,7 +164,9 @@ Status ValueLogImpl::Recover() {
           filename.c_str(), offset, ro_files_[vlog_file_number_]->file_size);
       reuse = true;
       delete ro_files_[vlog_file_number_];
+      delete lock_table_[vlog_file_number_];
       ro_files_.erase(vlog_file_number_);
+      lock_table_.erase(vlog_file_number_);
     }
 #ifndef NDEBUG
     assert(s.ok());
@@ -172,10 +182,12 @@ Status ValueLogImpl::Recover() {
     num_entries = 0;
   }
 
-  s = env_->NewAppendableRandomAccessFile(VLogFileName(dbname_, CurrentFileNumber()), &rw_file_);
+  s = env_->NewAppendableRandomAccessFile(
+      VLogFileName(dbname_, CurrentFileNumber()), &rw_file_);
   assert(s.ok());
   builder_ = new VLogBuilder(options_, rw_file_, reuse, offset, num_entries);
   s = VLogReader::Open(options_, rw_file_, offset, &reader_);
+  lock_table_.emplace(CurrentFileNumber(), new port::RWSpinLock);
 
   return s;
 }
@@ -193,6 +205,7 @@ ValueLogImpl::~ValueLogImpl() {
 }
 
 Status ValueLogImpl::FinishBuild() {
+  rwlock_.AssertWLockHeld();
   VLogFileMeta* ro_f = new VLogFileMeta;
   builder_->Finish();
   rw_file_->Sync();
@@ -210,12 +223,14 @@ Status ValueLogImpl::FinishBuild() {
   return Status::OK();
 }
 
-Status ValueLogImpl::NewVLogBuider() {
+Status ValueLogImpl::NewVLogBuilder() {
+  rwlock_.AssertWLockHeld();
   Status s;
   s = env_->NewAppendableRandomAccessFile(
       VLogFileName(dbname_, NewFileNumber()), &rw_file_);
   builder_ = new VLogBuilder(options_, rw_file_);
   s = VLogReader::Open(options_, rw_file_, 0, &reader_);
+  lock_table_.emplace(CurrentFileNumber(), new port::RWSpinLock);
   return s;
 }
 
@@ -241,6 +256,7 @@ static std::string Bytes2Size(uint64_t size) {
 }
 
 std::string ValueLogImpl::DebugString() {
+  ReadLock l(&rwlock_);
   std::string s = "=========Value Log==========\n";
   s.append(VLogFileName("", CurrentFileNumber()).erase(0, 1) + ":\t" +
            Bytes2Size(builder_->FileSize()) + " (current)\n");

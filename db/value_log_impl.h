@@ -9,6 +9,7 @@
 #include <deque>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 #include "leveldb/env.h"
@@ -62,7 +63,7 @@ class ValueLogImpl : public ValueLog {
   }
 
   Status FinishBuild();
-  Status NewVLogBuider();
+  Status NewVLogBuilder();
 
   struct ByFileNumber {
     bool operator()(VLogFileMeta* lhs, VLogFileMeta* rhs) const {
@@ -70,19 +71,29 @@ class ValueLogImpl : public ValueLog {
     }
   };
 
-  port::Mutex mutex_;
+  // TODO: use ref instead
+  struct FileAndRef {
+    std::atomic<int> refs{0};
+    AppendableRandomAccessFile* file{nullptr};
+  };
+
+  //  port::Mutex mutex_;        // protect class members
+  port::RWSpinLock rwlock_;  // protect class members
   Options options_;
   Env* const env_;
   const std::string dbname_;
   std::atomic<bool> shutdown_;
 
-  AppendableRandomAccessFile* rw_file_; // the file that currently being built
-  VLogBuilder* builder_;  // associated with rw_file_
-  VLogReader* reader_;    // associated with rw_file_
+  AppendableRandomAccessFile* rw_file_;  // the file that currently being built
+  VLogBuilder* builder_;                 // associated with rw_file_
+  VLogReader* reader_ GUARDED_BY(rwlock_);  // associated with rw_file_
 
-  std::map<uint64_t, VLogFileMeta*> ro_files_;  // read-only vlog files
+  std::map<uint64_t, VLogFileMeta*> ro_files_
+      GUARDED_BY(rwlock_);  // read-only vlog files
   uint64_t vlog_file_number_{0};
   VLogCache* const vlog_cache_{nullptr};
+  std::unordered_map<uint64_t, port::RWSpinLock*> lock_table_
+      GUARDED_BY(rwlock_);
 };
 
 }  // namespace leveldb

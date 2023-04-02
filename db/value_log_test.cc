@@ -6,6 +6,7 @@
 
 #include "db/filename.h"
 #include "db/value_log_impl.h"
+#include <thread>
 
 #include "leveldb/env.h"
 
@@ -37,7 +38,7 @@ uint64_t SizeOf(const Slice& key, const Slice& val) {
          key.size() + val.size();
 }
 
-TEST(VLOG_TEST, Sample) {
+TEST(VLOG_TEST, Recover) {
   Options options;
   Status s;
   options.env->NewStdLogger(&options.info_log);
@@ -62,8 +63,7 @@ TEST(VLOG_TEST, Sample) {
   ValueLog::Open(options, dbname, &v);
 
   std::string value;
-  s = v->Get(ReadOptions(), ValueHandle(1, 0, 0, 12), &value);
-  printf("s: %s\n", s.ToString().c_str());
+  v->Get(ReadOptions(), ValueHandle(1, 0, 0, 12), &value);
   ASSERT_EQ(value, "value01");
   v->Get(ReadOptions(), ValueHandle(1, 0, 12, 12), &value);
   ASSERT_EQ(value, "value02");
@@ -128,6 +128,76 @@ TEST(VLOG_TEST, Sample) {
     s = v->Add(WriteOptions(), key, val, &handle);
     ASSERT_TRUE(s.ok());
     size += SizeOf(key, val);
+  }
+
+  printf("%s", v->DebugString().c_str());
+
+  delete v;
+  delete db;
+  CleanDir(options.env, dbname);
+}
+
+TEST(VLOG_TEST, Concurrent) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  std::string dbname("testdb");
+  DB* db;
+  DB::Open(options, dbname, &db);
+  ValueLog* v;
+  ValueLog::Open(options, dbname, &v);
+  std::deque<std::pair<ValueHandle, std::string>> kvq;
+  port::Mutex lk;
+  port::CondVar cv(&lk);
+
+  std::thread* wth[8];
+  std::thread* rth[8];
+
+  for (int i = 0; i < 8; i++) {
+    wth[i] = new std::thread(
+        [&lk, &kvq, &v, &cv](int k) {
+          ValueHandle handle_;
+          for (int j = k * 100000; j < (k + 1) * 100000; ++j) {
+            std::string key("k0" + std::to_string(j + 7));
+            std::string val("value0" + std::to_string(j + 7));
+            auto s = v->Add(WriteOptions(), key, val, &handle_);
+            ASSERT_TRUE(s.ok());
+            lk.Lock();
+            kvq.emplace_back(handle_, val);
+            lk.Unlock();
+            cv.SignalAll();
+          }
+          return;
+        },
+        i);
+    rth[i] = new std::thread(
+        [&lk, &kvq, &v, &cv](int k) {
+          ValueHandle handle_;
+          std::string val;
+          std::string expected;
+          for (int j = k * 100000; j < (k + 1) * 100000; ++j) {
+            lk.Lock();
+            while (kvq.empty()) {
+              cv.Wait();
+            }
+            handle_ = kvq.front().first;
+            expected = kvq.front().second;
+            kvq.pop_front();
+            lk.Unlock();
+            auto s = v->Get(ReadOptions(), handle_, &val);
+            ASSERT_TRUE(s.ok());
+            ASSERT_EQ(val, expected);
+          }
+          return;
+        },
+        i);
+  }
+
+  for (int i = 0; i < 8; i++) {
+    wth[i]->join();
+    rth[i]->join();
   }
 
   printf("%s", v->DebugString().c_str());

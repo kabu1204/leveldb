@@ -29,6 +29,7 @@
 #include <snappy.h>
 #endif  // HAVE_SNAPPY
 
+#include <atomic>
 #include <cassert>
 #include <condition_variable>  // NOLINT
 #include <cstddef>
@@ -42,6 +43,57 @@ namespace leveldb {
 namespace port {
 
 class CondVar;
+
+class LOCKABLE RWSpinLock {
+ public:
+  RWSpinLock() : x(0) {}
+  ~RWSpinLock() = default;
+  RWSpinLock(const RWSpinLock&) = delete;
+  RWSpinLock& operator=(const RWSpinLock&) = delete;
+
+  void RLock() SHARED_LOCK_FUNCTION() {
+    while (!TryRLock())
+      ;
+  }
+
+  void WLock() EXCLUSIVE_LOCK_FUNCTION() {
+    while (!TryWLock())
+      ;
+  }
+
+  void RUnlock() UNLOCK_FUNCTION() {
+    x.fetch_sub(0b10, std::memory_order_release);
+  }
+
+  void WUnlock() UNLOCK_FUNCTION() {
+    x.fetch_and(~(0b01), std::memory_order_release);
+  }
+
+  bool TryRLock() SHARED_TRYLOCK_FUNCTION(true) {
+    if (x.fetch_add(0b10, std::memory_order_acquire) & 0b01) {
+      x.fetch_sub(0b10, std::memory_order_release);
+      return false;
+    }
+    return true;
+  }
+
+  bool TryWLock() EXCLUSIVE_TRYLOCK_FUNCTION(true) {
+    uint32_t expected = 0;
+    return x.compare_exchange_strong(expected, 0b01, std::memory_order_acq_rel);
+  }
+
+  void AssertRLockHeld() ASSERT_SHARED_LOCK() {}
+  void AssertWLockHeld() ASSERT_EXCLUSIVE_LOCK() {}
+
+ private:
+  /*
+   * |000000|0| => no readers/writers
+   * |000000|1| => writer exclusive
+   * |000001|0| => 1 reader
+   * |000100|0| => 8 readers
+   */
+  std::atomic<uint32_t> x;
+};
 
 // Thinly wraps std::mutex.
 class LOCKABLE Mutex {

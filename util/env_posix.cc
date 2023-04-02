@@ -8,11 +8,6 @@
 #ifndef __Fuchsia__
 #include <sys/resource.h>
 #endif
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <unistd.h>
-
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
@@ -24,16 +19,22 @@
 #include <queue>
 #include <set>
 #include <string>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <thread>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 
 #include "leveldb/env.h"
 #include "leveldb/slice.h"
 #include "leveldb/status.h"
+
 #include "port/port.h"
 #include "port/thread_annotations.h"
 #include "util/env_posix_test_helper.h"
+#include "util/mutexlock.h"
 #include "util/posix_logger.h"
 
 namespace leveldb {
@@ -520,6 +521,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
                       char* scratch) const override {
     if(!status_.ok()) return status_;
 
+    ReadLock l(&rwlock);
     if (offset + n > len_.load()) {
       *result = Slice();
       return PosixError(filename_, EINVAL);
@@ -534,6 +536,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     size_t write_size = data.size();
     const char* write_data = data.data();
 
+    WriteLock l(&rwlock);
     if (len_ + write_size > cap_) {  // TODO: consider order
       ExtendMmapSize();
       if(!status_.ok()) {
@@ -556,6 +559,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
   }
 
   virtual Status Sync() override {
+    WriteLock l(&rwlock);
     assert(len_ >= prev_sync_);
     if(len_ - prev_sync_ <= 0) return status_;
     if(::msync(mmap_base_+prev_sync_, len_ - prev_sync_, MS_SYNC)<0){
@@ -573,6 +577,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
  private:
 
   Status ExtendMmapSize() {
+    rwlock.AssertWLockHeld();
     size_t oldcap = cap_;
     size_t newcap = AlignBackward(oldcap + (oldcap >> 1), page_size_);
     if (newcap < len_) {
@@ -586,7 +591,6 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
       return status_;
     }
 
-    // TODO: lock
     if(newcap > reserved_) {
       ::munmap(mmap_base_, reserved_);
       reserved_ = reserved_ << 1;
@@ -611,14 +615,15 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     return status_;
   }
 
+  mutable port::RWSpinLock rwlock;
   Status status_;
   const size_t page_size_;
   const std::string filename_;
-  char* mmap_base_;
-  std::atomic<size_t> len_;   // file used length
-  size_t prev_sync_;   // previous sync point
-  size_t cap_;   // file mapped length
-  size_t reserved_; // mmap reserved
+  char* mmap_base_ GUARDED_BY(rwlock);
+  std::atomic<size_t> len_;              // file used length
+  size_t prev_sync_ GUARDED_BY(rwlock);  // previous sync point
+  size_t cap_ GUARDED_BY(rwlock);        // file mapped length
+  size_t reserved_ GUARDED_BY(rwlock);   // mmap reserved
   int fd_;
 };
 
