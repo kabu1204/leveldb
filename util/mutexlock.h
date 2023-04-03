@@ -22,7 +22,7 @@ namespace leveldb {
 
 class SCOPED_LOCKABLE ReadLock {
  public:
-  explicit ReadLock(port::RWSpinLock* lk) SHARED_LOCK_FUNCTION(lk) : lk_(lk) {
+  explicit ReadLock(port::RWLock* lk) SHARED_LOCK_FUNCTION(lk) : lk_(lk) {
     this->lk_->RLock();
   }
   ~ReadLock() UNLOCK_FUNCTION() { this->lk_->RUnlock(); }
@@ -31,13 +31,12 @@ class SCOPED_LOCKABLE ReadLock {
   ReadLock& operator=(const ReadLock&) = delete;
 
  private:
-  port::RWSpinLock* const lk_;
+  port::RWLock* const lk_;
 };
 
 class SCOPED_LOCKABLE WriteLock {
  public:
-  explicit WriteLock(port::RWSpinLock* lk) EXCLUSIVE_LOCK_FUNCTION(lk)
-      : lk_(lk) {
+  explicit WriteLock(port::RWLock* lk) EXCLUSIVE_LOCK_FUNCTION(lk) : lk_(lk) {
     this->lk_->WLock();
   }
   ~WriteLock() UNLOCK_FUNCTION() { this->lk_->WUnlock(); }
@@ -46,7 +45,7 @@ class SCOPED_LOCKABLE WriteLock {
   WriteLock& operator=(const WriteLock&) = delete;
 
  private:
-  port::RWSpinLock* const lk_;
+  port::RWLock* const lk_;
 };
 
 class SCOPED_LOCKABLE MutexLock {

@@ -137,7 +137,7 @@ TEST(VLOG_TEST, Recover) {
   CleanDir(options.env, dbname);
 }
 
-TEST(VLOG_TEST, Concurrent) {
+TEST(VLOG_TEST, ConcurrentSPMC) {
   Options options;
   Status s;
   options.env->NewStdLogger(&options.info_log);
@@ -151,17 +151,25 @@ TEST(VLOG_TEST, Concurrent) {
   std::deque<std::pair<ValueHandle, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);
+  uint32_t total_entries = 8 * 1000000;
+  int n_writers = 1;  // single-producer
+  int n_readers = 8;  // multi-consumer
 
-  std::thread* wth[8];
-  std::thread* rth[8];
+  total_entries = n_writers * (total_entries / n_writers);
+  total_entries = n_readers * (total_entries / n_readers);
+  uint32_t per_writer = total_entries / n_writers;
+  uint32_t per_reader = total_entries / n_readers;
 
-  for (int i = 0; i < 8; i++) {
+  std::thread** wth = new std::thread*[n_writers];
+  std::thread** rth = new std::thread*[n_readers];
+
+  for (int i = 0; i < n_writers; i++) {
     wth[i] = new std::thread(
-        [&lk, &kvq, &v, &cv](int k) {
+        [&lk, &kvq, &v, &cv, per_writer](int k) {
           ValueHandle handle_;
-          for (int j = k * 100000; j < (k + 1) * 100000; ++j) {
-            std::string key("k0" + std::to_string(j + 7));
-            std::string val("value0" + std::to_string(j + 7));
+          for (int j = k * per_writer; j < (k + 1) * per_writer; ++j) {
+            std::string key("k0" + std::to_string(j));
+            std::string val("value0" + std::to_string(j));
             auto s = v->Add(WriteOptions(), key, val, &handle_);
             ASSERT_TRUE(s.ok());
             lk.Lock();
@@ -172,12 +180,15 @@ TEST(VLOG_TEST, Concurrent) {
           return;
         },
         i);
+  }
+
+  for (int i = 0; i < n_readers; i++) {
     rth[i] = new std::thread(
-        [&lk, &kvq, &v, &cv](int k) {
+        [&lk, &kvq, &v, &cv, per_reader](int k) {
           ValueHandle handle_;
           std::string val;
           std::string expected;
-          for (int j = k * 100000; j < (k + 1) * 100000; ++j) {
+          for (int j = k * per_reader; j < (k + 1) * per_reader; ++j) {
             lk.Lock();
             while (kvq.empty()) {
               cv.Wait();
@@ -195,14 +206,20 @@ TEST(VLOG_TEST, Concurrent) {
         i);
   }
 
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < n_writers; i++) {
     wth[i]->join();
+    delete wth[i];
+  }
+  for (int i = 0; i < n_readers; i++) {
     rth[i]->join();
+    delete rth[i];
   }
 
   printf("%s", v->DebugString().c_str());
 
   delete v;
   delete db;
+  delete[] wth;
+  delete[] rth;
   CleanDir(options.env, dbname);
 }

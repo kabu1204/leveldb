@@ -31,7 +31,98 @@ struct VLogFileMeta {
   uint64_t file_size{0};
 };
 
-// thread-safe
+class VLogRWFile {
+ public:
+  VLogRWFile(const Options& options, AppendableRandomAccessFile* f,
+             bool reuse = false, uint32_t offset = 0, uint32_t num_entries = 0)
+      : file_(f),
+        builder_(nullptr),
+        reader_(nullptr),
+        closed_(false),
+        refs_(0) {
+    if (file_ != nullptr) {
+      builder_ = new VLogBuilder(options, file_, reuse, offset, num_entries);
+      status_ = VLogReader::Open(options, file_, offset, &reader_);
+    }
+  }
+
+  VLogRWFile(const VLogRWFile&) = delete;
+  VLogRWFile& operator=(const VLogRWFile&) = delete;
+
+  /*
+   * Ref()/Unref() are not thread-safe and need external synchronization.
+   */
+  void Ref() { ++refs_; }
+  void Unref() {
+    --refs_;
+    assert(refs_ >= 0);
+    if (refs_ <= 0) {
+      delete this;
+    }
+  }
+
+  // should be called after Ref()
+  void Add(const Slice& key, const Slice& val, ValueHandle* handle) {
+    assert(!closed_);
+    builder_->Add(key, val, handle);
+    reader_->IncreaseOffset(builder_->Offset());
+  }
+
+  void Flush() {
+    assert(!closed_);
+    builder_->Flush();
+  }
+
+  void Sync() {
+    assert(!closed_);
+    file_->Sync();
+  }
+
+  void Finish() {
+    assert(!closed_);
+    closed_ = true;
+    file_->Sync();
+    builder_->Finish();
+    file_->Close();
+  }
+
+  Iterator* NewIterator(const ReadOptions& options) {
+    Ref();
+    Iterator* iter = reader_->NewIterator(options);
+    iter->RegisterCleanup(&UnrefCleanup, this, nullptr);
+    return iter;
+  }
+
+  uint32_t Offset() const { return builder_->Offset(); }
+  uint32_t FileSize() const { return builder_->FileSize(); }
+
+ private:
+  ~VLogRWFile() {
+    assert(closed_);
+    delete reader_;
+    delete builder_;
+    delete file_;
+  }
+
+  static void UnrefCleanup(void* arg1, void* arg2) {
+    VLogRWFile* p = reinterpret_cast<VLogRWFile*>(arg1);
+    p->Unref();
+  }
+
+  std::atomic<int> refs_;
+  bool closed_;
+
+  Status status_;
+
+  AppendableRandomAccessFile* const
+      file_;              // the file that currently being built
+  VLogBuilder* builder_;  // associated with rw_file_
+  VLogReader* reader_;    // associated with rw_file_
+};
+
+/*
+ * thread-safe for 1 Add() and N Get()
+ */
 class ValueLogImpl : public ValueLog {
  public:
   ~ValueLogImpl() override;
@@ -39,6 +130,9 @@ class ValueLogImpl : public ValueLog {
   ValueLogImpl(const ValueLogImpl&) = delete;
   ValueLogImpl& operator=(const ValueLogImpl&) = delete;
 
+  /*
+   * concurrent Add() is unsafe
+   */
   Status Add(const WriteOptions& options, const Slice& key, const Slice& value,
              ValueHandle* handle) override;
 
@@ -71,22 +165,13 @@ class ValueLogImpl : public ValueLog {
     }
   };
 
-  // TODO: use ref instead
-  struct FileAndRef {
-    std::atomic<int> refs{0};
-    AppendableRandomAccessFile* file{nullptr};
-  };
-
-  //  port::Mutex mutex_;        // protect class members
   port::RWSpinLock rwlock_;  // protect class members
   Options options_;
   Env* const env_;
   const std::string dbname_;
   std::atomic<bool> shutdown_;
 
-  AppendableRandomAccessFile* rw_file_;  // the file that currently being built
-  VLogBuilder* builder_;                 // associated with rw_file_
-  VLogReader* reader_ GUARDED_BY(rwlock_);  // associated with rw_file_
+  VLogRWFile* rwfile_;
 
   std::map<uint64_t, VLogFileMeta*> ro_files_
       GUARDED_BY(rwlock_);  // read-only vlog files

@@ -615,7 +615,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     return status_;
   }
 
-  mutable port::RWSpinLock rwlock;
+  mutable port::RWMutex rwlock;
   Status status_;
   const size_t page_size_;
   const std::string filename_;

@@ -32,23 +32,20 @@ ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname)
       dbname_(dbname),
       vlog_cache_(new VLogCache(dbname_, options, options.max_open_vlogs)),
       shutdown_(false),
-      rw_file_(nullptr),
-      builder_(nullptr),
-      reader_(nullptr),
+      rwfile_(nullptr),
       vlog_file_number_(0) {}
 
 Status ValueLogImpl::Add(const WriteOptions& options, const Slice& key,
                          const Slice& value, ValueHandle* handle) {
   Status s;
-  WriteLock l(&rwlock_);
   handle->table_ = CurrentFileNumber();
-  builder_->Add(key, value, handle);
-  builder_->Flush();
+  rwfile_->Add(key, value, handle);
+  rwfile_->Flush();
   if (options.sync) {
-    s = rw_file_->Sync();  // expensive
+    rwfile_->Sync();  // expensive
   }
-  reader_->IncreaseOffset(builder_->Offset());
-  if (builder_->FileSize() > options_.max_vlog_file_size) {
+  if (rwfile_->FileSize() > options_.max_vlog_file_size) {
+    WriteLock l(&rwlock_);
     FinishBuild();         // expensive
     s = NewVLogBuilder();  // expensive
   }
@@ -74,22 +71,29 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
       return Status::InvalidArgument("value log number not exists");
     }
   } else {
-    if (handle.offset_ >= builder_->Offset()) {
+    if (handle.offset_ >= rwfile_->Offset()) {
+      Log(options_.info_log, "value log offset %u is out of limit %u",
+          handle.offset_, rwfile_->Offset());
       return Status::InvalidArgument("value log offset is out of limit");
     }
-    iter = reader_->NewIterator(options);
+    iter = rwfile_->NewIterator(options);
   }
-  std::string handle_encoding;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);  // expensive
-  if (iter->Valid()) {
-    const Slice v = iter->value();
-    value->assign(v.data(), v.size());
-  } else {
+  {
+    // unlock when reading from disk
+    rwlock_.RUnlock();
+    std::string handle_encoding;
+    handle.EncodeTo(&handle_encoding);
+    iter->Seek(handle_encoding);  // expensive
+    if (iter->Valid()) {
+      const Slice v = iter->value();
+      value->assign(v.data(), v.size());
+    } else {
+      delete iter;
+      return Status::NotFound("value not found");
+    }
     delete iter;
-    return Status::NotFound("value not found");
+    rwlock_.RLock();
   }
-  delete iter;
   return Status::OK();
 }
 
@@ -127,24 +131,26 @@ Status ValueLogImpl::Recover() {
   // try to reuse the latest file
   uint64_t offset, num_entries;
   bool reuse = false;
+  AppendableRandomAccessFile* file;
+  VLogReader* reader;
   if (vlog_file_number_ != 0) {
     std::string filename(VLogFileName(dbname_, vlog_file_number_));
-    s = env_->NewAppendableRandomAccessFile(filename, &rw_file_);
+    s = env_->NewAppendableRandomAccessFile(filename, &file);
     assert(s.ok());
-    s = VLogReader::Open(options_, rw_file_,
-                         ro_files_[vlog_file_number_]->file_size, &reader_);
+    s = VLogReader::Open(options_, file,
+                         ro_files_[vlog_file_number_]->file_size, &reader);
 
     Log(options_.info_log, "validating %s, file_size=%llu", filename.c_str(),
         ro_files_[vlog_file_number_]->file_size);
 
-    bool valid = reader_->Validate(&offset, &num_entries);
+    bool valid = reader->Validate(&offset, &num_entries);
     /*
      * it's not expensive to reopen and re-create once more when recovering a
      * database, we delete them here and re-create later for better code
      * readability.
      */
-    delete reader_;
-    delete rw_file_;
+    delete reader;
+    delete file;
 
     if (!valid) {
       /*
@@ -183,10 +189,10 @@ Status ValueLogImpl::Recover() {
   }
 
   s = env_->NewAppendableRandomAccessFile(
-      VLogFileName(dbname_, CurrentFileNumber()), &rw_file_);
+      VLogFileName(dbname_, CurrentFileNumber()), &file);
   assert(s.ok());
-  builder_ = new VLogBuilder(options_, rw_file_, reuse, offset, num_entries);
-  s = VLogReader::Open(options_, rw_file_, offset, &reader_);
+  rwfile_ = new VLogRWFile(options_, file, reuse, offset, num_entries);
+  rwfile_->Ref();
   lock_table_.emplace(CurrentFileNumber(), new port::RWSpinLock);
 
   return s;
@@ -194,6 +200,7 @@ Status ValueLogImpl::Recover() {
 
 ValueLogImpl::~ValueLogImpl() {
   FinishBuild();
+  rwfile_->Unref();
   shutdown_.store(true, std::memory_order_release);
   for (auto p : ro_files_) {
     p.second->refs--;
@@ -206,18 +213,10 @@ ValueLogImpl::~ValueLogImpl() {
 
 Status ValueLogImpl::FinishBuild() {
   rwlock_.AssertWLockHeld();
+  rwfile_->Finish();
   VLogFileMeta* ro_f = new VLogFileMeta;
-  builder_->Finish();
-  rw_file_->Sync();
-  ro_f->file_size = builder_->FileSize();
+  ro_f->file_size = rwfile_->FileSize();
   ro_f->number = CurrentFileNumber();
-  delete reader_;
-  delete builder_;
-  rw_file_->Close();
-  delete rw_file_;
-  rw_file_ = nullptr;
-  builder_ = nullptr;
-  reader_ = nullptr;
 
   ro_files_.emplace(ro_f->number, ro_f);
   return Status::OK();
@@ -226,20 +225,18 @@ Status ValueLogImpl::FinishBuild() {
 Status ValueLogImpl::NewVLogBuilder() {
   rwlock_.AssertWLockHeld();
   Status s;
+  rwfile_->Unref();
+
+  AppendableRandomAccessFile* file;
   s = env_->NewAppendableRandomAccessFile(
-      VLogFileName(dbname_, NewFileNumber()), &rw_file_);
-  builder_ = new VLogBuilder(options_, rw_file_);
-  s = VLogReader::Open(options_, rw_file_, 0, &reader_);
+      VLogFileName(dbname_, NewFileNumber()), &file);
+  rwfile_ = new VLogRWFile(options_, file);
+  rwfile_->Ref();
   lock_table_.emplace(CurrentFileNumber(), new port::RWSpinLock);
   return s;
 }
 
 static std::string Bytes2Size(uint64_t size) {
-  /*
-   * [0, 1024B] => B
-   * [1KB, 1MB] => KB
-   *
-   */
   char buf[100];
   if (size < (1 << 10)) {
     snprintf(buf, sizeof(buf), "%llu B", size);
@@ -259,7 +256,7 @@ std::string ValueLogImpl::DebugString() {
   ReadLock l(&rwlock_);
   std::string s = "=========Value Log==========\n";
   s.append(VLogFileName("", CurrentFileNumber()).erase(0, 1) + ":\t" +
-           Bytes2Size(builder_->FileSize()) + " (current)\n");
+           Bytes2Size(rwfile_->FileSize()) + " (current)\n");
   for (auto f : ro_files_) {
     s.append(VLogFileName("", f.second->number).erase(0, 1) + ":\t" +
              Bytes2Size(f.second->file_size) + "\n");

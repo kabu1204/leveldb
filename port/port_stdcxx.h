@@ -44,28 +44,50 @@ namespace port {
 
 class CondVar;
 
-class LOCKABLE RWSpinLock {
+/*
+ * TODO: is it too expensive to use a virtual spinlock?
+ */
+class LOCKABLE RWLock {
+ public:
+  RWLock() = default;
+  ~RWLock() = default;
+  RWLock(const RWLock&) = delete;
+  RWLock& operator=(const RWLock&) = delete;
+
+  virtual void RLock() SHARED_LOCK_FUNCTION() = 0;
+
+  virtual void WLock() EXCLUSIVE_LOCK_FUNCTION() = 0;
+
+  virtual void RUnlock() UNLOCK_FUNCTION() = 0;
+
+  virtual void WUnlock() UNLOCK_FUNCTION() = 0;
+
+  virtual void AssertRLockHeld() ASSERT_SHARED_LOCK() {}
+  virtual void AssertWLockHeld() ASSERT_EXCLUSIVE_LOCK() {}
+};
+
+class LOCKABLE RWSpinLock : public RWLock {
  public:
   RWSpinLock() : x(0) {}
   ~RWSpinLock() = default;
   RWSpinLock(const RWSpinLock&) = delete;
   RWSpinLock& operator=(const RWSpinLock&) = delete;
 
-  void RLock() SHARED_LOCK_FUNCTION() {
+  void RLock() SHARED_LOCK_FUNCTION() override {
     while (!TryRLock())
       ;
   }
 
-  void WLock() EXCLUSIVE_LOCK_FUNCTION() {
+  void WLock() EXCLUSIVE_LOCK_FUNCTION() override {
     while (!TryWLock())
       ;
   }
 
-  void RUnlock() UNLOCK_FUNCTION() {
+  void RUnlock() UNLOCK_FUNCTION() override {
     x.fetch_sub(0b10, std::memory_order_release);
   }
 
-  void WUnlock() UNLOCK_FUNCTION() {
+  void WUnlock() UNLOCK_FUNCTION() override {
     x.fetch_and(~(0b01), std::memory_order_release);
   }
 
@@ -81,9 +103,6 @@ class LOCKABLE RWSpinLock {
     uint32_t expected = 0;
     return x.compare_exchange_strong(expected, 0b01, std::memory_order_acq_rel);
   }
-
-  void AssertRLockHeld() ASSERT_SHARED_LOCK() {}
-  void AssertWLockHeld() ASSERT_EXCLUSIVE_LOCK() {}
 
  private:
   /*
@@ -138,6 +157,50 @@ class CondVar {
  private:
   std::condition_variable cv_;
   Mutex* const mu_;
+};
+
+/*
+ * Read-Write Lock based on CondVar
+ * TODO:
+ *  1. use notify_one() to avoid thundering herd
+ *  2. use atomic<uint32_t> to avoid acquiring mutex when unlocking.
+ */
+class LOCKABLE RWMutex : public RWLock {
+ public:
+  RWMutex() : readers_(0) {}
+  ~RWMutex() = default;
+  RWMutex(const RWMutex&) = delete;
+  RWMutex& operator=(const RWMutex&) = delete;
+
+  void WLock() EXCLUSIVE_LOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    while (readers_ != 0) cv_.wait(lk, [this]() { return readers_ == 0; });
+    readers_ = 0b01;
+  }
+
+  void WUnlock() UNLOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    readers_ = 0;
+    cv_.notify_all();
+  }
+
+  void RLock() SHARED_LOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    while (readers_ & 0b01)
+      cv_.wait(lk, [this]() { return !(readers_ & 0b01); });
+    readers_ += 0b10;
+  }
+
+  void RUnlock() UNLOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    readers_ -= 0b10;
+    if (readers_ == 0) cv_.notify_all();
+  }
+
+ private:
+  std::condition_variable cv_;
+  std::mutex mu_;
+  uint32_t readers_;
 };
 
 inline bool Snappy_Compress(const char* input, size_t length,
