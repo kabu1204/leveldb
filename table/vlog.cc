@@ -1,16 +1,23 @@
 //
 // Created by 于承业 on 2023/3/29.
 //
+// Entry in the .vlog file:
+//  key_len+8:  VarUint32
+//  value_len:  VarUint32
+//  key:        uint8[key_len]
+//  SeqNum:     Fixed64
+//  value:      uint8[value_len]
 
 #include "table/vlog.h"
+
+#include "db/value_batch.h"
+#include "db/write_batch_internal.h"
 
 namespace leveldb {
 
 struct VLogBuilder::Rep {
   Rep(const Options& opt, AppendableRandomAccessFile* f)
-      : options(opt),
-        file(f)
-  {}
+      : options(opt), file(f) {}
 
   Options options;
   Status status;
@@ -39,10 +46,12 @@ VLogBuilder::~VLogBuilder() {
   delete rep_;
 }
 
+// TODO: should not be used
 void VLogBuilder::Add(const Slice& key, const Slice& value, ValueHandle* handle) {
   assert(!rep_->closed);
   if(!ok()) return;
   uint32_t size = key.size() + value.size();
+  // TODO: directly append to file
   char *buf = (size + 10) > 1024 ? new char[size+10]: rep_->buf;
 
   char *ptr = EncodeVarint32(buf, key.size());
@@ -65,6 +74,15 @@ void VLogBuilder::Add(const Slice& key, const Slice& value, ValueHandle* handle)
   rep_->offset += size;
   rep_->num_entries++;
 }
+
+void VLogBuilder::AddBatch(const ValueBatch* batch) {
+  rep_->status = rep_->file->Append(Slice(batch->data(), batch->size()));
+  if (!ok()) return;
+
+  rep_->offset += batch->size();
+  rep_->num_entries += batch->NumEntries();
+}
+
 void VLogBuilder::Flush() {
   assert(!rep_->closed);
   rep_->status = rep_->file->Flush();
@@ -104,11 +122,11 @@ struct VLogReader::Rep {
 };
 
 static inline const char* DecodeEntry(const char* p, const char* limit,
-                                      uint32_t* key_len, uint32_t* value_len){
-  if(limit - p < 2) return nullptr;
+                                      uint32_t* key_len, uint32_t* value_len) {
+  if (limit - p < 2) return nullptr;
   *key_len = reinterpret_cast<const uint8_t*>(p)[0];
-  if(*key_len < 128){
-    p += 1;
+  if ((*key_len) < 128) {
+    p++;
   } else {
     if ((p = GetVarint32Ptr(p, limit, key_len)) == nullptr) return nullptr;
   }
@@ -278,13 +296,57 @@ bool VLogReader::Validate(uint64_t* offset, uint64_t* num_entries) {
   *offset = 0;
   *num_entries = 0;
   uint64_t n = 0;
-  for(iter->SeekToFirst(); iter->Valid(); iter->Next()){
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
     n++;
   }
   *offset = iter->current_;
   *num_entries = n;
   delete iter;
   return *offset == rep_->limit;
+}
+
+// should be called after SetSequence()
+void ValueBatch::Put(SequenceNumber s, const Slice& key, const Slice& value) {
+  assert(!closed);
+  uint32_t off = rep_.size();
+  PutVarint32(&rep_, key.size() + sizeof(uint64_t));
+  PutVarint32(&rep_, value.size());
+  rep_.append(key.data(), key.size());
+  PutFixed64(&rep_, s);
+  rep_.append(value.data(), value.size());
+  handles_.emplace_back(0, 0, off, rep_.size() - off);
+  num_entries++;
+}
+
+Status ValueBatch::ToWriteBatch(WriteBatch* batch) {
+  assert(closed);
+  assert(num_entries == handles_.size());
+  const char* p = rep_.data();
+  const char* limit = rep_.data() + rep_.size();
+  uint32_t found = 0;
+  uint32_t key_len, val_len;
+  SequenceNumber sequence;
+  Slice key;
+  std::string handle_encoding;
+
+  while (p < limit) {
+    if ((p = DecodeEntry(p, limit, &key_len, &val_len)) != nullptr) {
+      key = Slice(p, key_len - sizeof(uint64_t));
+      if (!found) {
+        sequence = DecodeFixed64(p + key_len - sizeof(uint64_t));
+      }
+      assert(found == DecodeFixed64(p + key_len - sizeof(uint64_t)) - sequence);
+      handles_[found].EncodeTo(&handle_encoding);
+      batch->Put(key, Slice(handle_encoding));
+      found++;
+      p += key_len + val_len;
+    }
+  }
+  if (found != num_entries) {
+    return Status::Corruption("corrupted ValueBatch");
+  }
+  WriteBatchInternal::SetSequence(batch, sequence);
+  return Status::OK();
 }
 
 }  // namespace leveldb

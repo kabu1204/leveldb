@@ -189,6 +189,8 @@ Status DumpTable(Env* env, const std::string& fname, WritableFile* dst) {
         r += "del";
       } else if (key.type == kTypeValue) {
         r += "val";
+      } else if (key.type == kTypeValueHandle) {
+        r += "valptr";
       } else {
         AppendNumberTo(&r, key.type);
       }

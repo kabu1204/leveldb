@@ -151,6 +151,10 @@ struct LEVELDB_EXPORT Options {
 
   // max opened vlog files
   size_t max_open_vlogs = 1000;
+
+  size_t max_entries_per_vlog = 100000;
+
+  size_t vlog_value_size_threshold = 1024;
 };
 
 // Options that control read operations

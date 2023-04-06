@@ -5,6 +5,9 @@
 #ifndef LEVELDB_VALUE_LOG_IMPL_H
 #define LEVELDB_VALUE_LOG_IMPL_H
 
+#include "db/db_impl.h"
+#include "db/db_wrapper.h"
+#include "db/log_writer.h"
 #include "db/value_table_cache.h"
 #include <deque>
 #include <map>
@@ -15,7 +18,6 @@
 #include "leveldb/env.h"
 #include "leveldb/options.h"
 #include "leveldb/status.h"
-#include "leveldb/value_log.h"
 
 #include "port/port.h"
 #include "table/format.h"
@@ -59,6 +61,12 @@ class VLogRWFile {
     if (refs_ <= 0) {
       delete this;
     }
+  }
+
+  void Write(const ValueBatch* batch) {
+    assert(!closed_);
+    builder_->AddBatch(batch);
+    reader_->IncreaseOffset(builder_->Offset());
   }
 
   // should be called after Ref()
@@ -123,9 +131,12 @@ class VLogRWFile {
 /*
  * thread-safe for 1 Add() and N Get()
  */
-class ValueLogImpl : public ValueLog {
+class ValueLogImpl {
  public:
-  ~ValueLogImpl() override;
+  static Status Open(const Options& options, const std::string& dbname,
+                     DBWrapper* db, ValueLogImpl** vlog);
+
+  virtual ~ValueLogImpl();
 
   ValueLogImpl(const ValueLogImpl&) = delete;
   ValueLogImpl& operator=(const ValueLogImpl&) = delete;
@@ -133,22 +144,33 @@ class ValueLogImpl : public ValueLog {
   /*
    * concurrent Add() is unsafe
    */
-  Status Add(const WriteOptions& options, const Slice& key, const Slice& value,
-             ValueHandle* handle) override;
+  Status Put(const WriteOptions& options, const Slice& key, const Slice& value,
+             uint64_t seq, ValueHandle* handle);
+
+  Status Write(const WriteOptions& options, ValueBatch* batch);
 
   Status Get(const ReadOptions& options, const ValueHandle& handle,
-             std::string* value) override;
+             std::string* value);
 
   Status Recover();
 
-  std::string DebugString() override;
+  std::string DebugString();
+
+  void BackgroundGC();
+
+  static void BGWork(void* vlog);
 
  private:
   friend class ValueLog;
+  friend Status ValueLogImpl::Open(const Options& options,
+                                   const std::string& dbname, DBWrapper* db,
+                                   ValueLogImpl** vlog);
 
-  explicit ValueLogImpl(const Options& options, const std::string& dbname);
+  explicit ValueLogImpl(const Options& options, const std::string& dbname,
+                        DBImpl* db);
 
   uint64_t NewFileNumber() { return ++vlog_file_number_; }
+
   uint64_t CurrentFileNumber() const { return vlog_file_number_; }
   void ReuseFileNumber(uint64_t number) {
     if (number == CurrentFileNumber() + 1) {
@@ -157,7 +179,12 @@ class ValueLogImpl : public ValueLog {
   }
 
   Status FinishBuild();
+
   Status NewVLogBuilder();
+
+  Iterator* NewVLogFileIterator(const ReadOptions& options, uint64_t number);
+
+  uint64_t PickGC();
 
   struct ByFileNumber {
     bool operator()(VLogFileMeta* lhs, VLogFileMeta* rhs) const {
@@ -166,19 +193,30 @@ class ValueLogImpl : public ValueLog {
   };
 
   port::RWSpinLock rwlock_;  // protect class members
+  const std::string dbname_;
   Options options_;
   Env* const env_;
-  const std::string dbname_;
-  std::atomic<bool> shutdown_;
+  DB* const db_;
 
+  /*
+   * Read & Write VLOG
+   */
   VLogRWFile* rwfile_;
-
   std::map<uint64_t, VLogFileMeta*> ro_files_
       GUARDED_BY(rwlock_);  // read-only vlog files
   uint64_t vlog_file_number_{0};
   VLogCache* const vlog_cache_{nullptr};
   std::unordered_map<uint64_t, port::RWSpinLock*> lock_table_
       GUARDED_BY(rwlock_);
+  char buf_[256];
+
+  /*
+   * Garbage collection
+   */
+  uint64_t gc_ptr_;
+  WritableFile* hintfile_;
+  log::Writer* hint_;
+  std::atomic<bool> shutdown_;
 };
 
 }  // namespace leveldb

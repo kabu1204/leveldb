@@ -537,9 +537,9 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     const char* write_data = data.data();
 
     WriteLock l(&rwlock);
-    if (len_ + write_size > cap_) {  // TODO: consider order
+    if (len_ + write_size > cap_) {
       ExtendMmapSize();
-      if(!status_.ok()) {
+      if (!status_.ok()) {
         return status_;
       }
     }

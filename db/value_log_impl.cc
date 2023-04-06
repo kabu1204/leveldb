@@ -3,7 +3,7 @@
 //
 
 #include "db/value_log_impl.h"
-
+#include "db/write_batch_internal.h"
 #include "db/filename.h"
 
 #include "port/port.h"
@@ -11,23 +11,29 @@
 
 namespace leveldb {
 
-ValueLog::~ValueLog() = default;
-
-Status ValueLog::Open(const Options& options, const std::string& dbname,
-                      ValueLog** vlog) {
-  if (vlog != nullptr) {
-    *vlog = nullptr;
-  }
-
-  ValueLogImpl* vlog_impl = new ValueLogImpl(options, dbname);
-  vlog_impl->Recover();
-  *vlog = vlog_impl;
-
+Status WriteBatchInternal::InsertInto(const WriteBatch* batch, ValueLogImpl* vlog){
+//  WriteBatch*
   return Status::OK();
 }
 
-ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname)
+static size_t EncodeInternalKey(const Slice& key, uint64_t seq, char* ptr) {
+  std::memcpy(ptr, key.data(), key.size());
+  EncodeFixed64(ptr+key.size(), seq);
+  return key.size() + sizeof(uint64_t);
+}
+
+static size_t DecodeInternalKey(const char* ptr, const char* end, uint64_t* seq) {
+  *seq = DecodeFixed64(end - sizeof(uint64_t));
+  return end - ptr - sizeof(uint64_t);
+}
+
+static inline size_t SizeOfInternalKey(const Slice& key) {
+  return key.size() + 8;
+}
+
+ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname, DBImpl* db)
     : env_(options.env),
+      db_(db),
       options_(options),
       dbname_(dbname),
       vlog_cache_(new VLogCache(dbname_, options, options.max_open_vlogs)),
@@ -35,19 +41,27 @@ ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname)
       rwfile_(nullptr),
       vlog_file_number_(0) {}
 
-Status ValueLogImpl::Add(const WriteOptions& options, const Slice& key,
-                         const Slice& value, ValueHandle* handle) {
+Status ValueLogImpl::Put(const WriteOptions& options, const Slice& key,
+                         const Slice& value, uint64_t seq, ValueHandle* handle) {
   Status s;
-  handle->table_ = CurrentFileNumber();
-  rwfile_->Add(key, value, handle);
-  rwfile_->Flush();
+  ValueBatch batch;
+  batch.Put(seq, key, value);
+  s = Write(options, &batch);
+  *handle = batch.handles_[0];
+  return s;
+}
+
+Status ValueLogImpl::Write(const WriteOptions& options, ValueBatch* batch) {
+  Status s;
+  batch->Finalize(CurrentFileNumber(), rwfile_->Offset());
+  rwfile_->Write(batch);
   if (options.sync) {
-    rwfile_->Sync();  // expensive
+    rwfile_->Sync();
   }
   if (rwfile_->FileSize() > options_.max_vlog_file_size) {
     WriteLock l(&rwlock_);
-    FinishBuild();         // expensive
-    s = NewVLogBuilder();  // expensive
+    FinishBuild();
+    s = NewVLogBuilder();
   }
   return s;
 }
@@ -234,6 +248,47 @@ Status ValueLogImpl::NewVLogBuilder() {
   rwfile_->Ref();
   lock_table_.emplace(CurrentFileNumber(), new port::RWSpinLock);
   return s;
+}
+
+Iterator* ValueLogImpl::NewVLogFileIterator(const ReadOptions& options, uint64_t number) {
+  rwlock_.AssertRLockHeld();
+  if (number == CurrentFileNumber()) {
+    return rwfile_->NewIterator(options);
+  } else {
+    auto it = ro_files_.find(number);
+    if (it != ro_files_.end()) {
+      return vlog_cache_->NewIterator(options, number, it->second->file_size);
+    }
+  }
+  return nullptr;
+}
+
+void ValueLogImpl::BGWork(void* vlog) {
+  reinterpret_cast<ValueLogImpl*>(vlog)->BackgroundGC();
+}
+
+void ValueLogImpl::BackgroundGC() {
+  ReadLock l(&rwlock_);
+  uint64_t number = PickGC();
+  Iterator* iter = NewVLogFileIterator(ReadOptions(), number);
+
+  uint64_t seq;
+  Slice ikey, key;
+  for (iter->SeekToFirst(); iter->Valid() ; iter->Next()) {
+    ikey = iter->key();
+    size_t key_size = DecodeInternalKey(ikey.data(),
+                                       ikey.data()+ikey.size(), &seq);
+    key = Slice(ikey.data(), key_size);
+  }
+}
+
+uint64_t ValueLogImpl::PickGC() {
+  rwlock_.AssertRLockHeld();
+  gc_ptr_++;
+  if (gc_ptr_ == CurrentFileNumber()){
+    gc_ptr_ = 1;
+  }
+  return gc_ptr_;
 }
 
 static std::string Bytes2Size(uint64_t size) {

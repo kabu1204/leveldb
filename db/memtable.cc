@@ -121,6 +121,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
       // Correct user key
       const uint64_t tag = DecodeFixed64(key_ptr + key_length - 8);
       switch (static_cast<ValueType>(tag & 0xff)) {
+        case kTypeValueHandle:
         case kTypeValue: {
           Slice v = GetLengthPrefixedSlice(key_ptr + key_length);
           value->assign(v.data(), v.size());

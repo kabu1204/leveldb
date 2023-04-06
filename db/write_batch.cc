@@ -55,6 +55,7 @@ Status WriteBatch::Iterate(Handler* handler) const {
     char tag = input[0];
     input.remove_prefix(1);
     switch (tag) {
+      case kTypeValueHandle:
       case kTypeValue:
         if (GetLengthPrefixedSlice(&input, &key) &&
             GetLengthPrefixedSlice(&input, &value)) {
@@ -147,6 +148,16 @@ void WriteBatchInternal::Append(WriteBatch* dst, const WriteBatch* src) {
   SetCount(dst, Count(dst) + Count(src));
   assert(src->rep_.size() >= kHeader);
   dst->rep_.append(src->rep_.data() + kHeader, src->rep_.size() - kHeader);
+}
+
+void WriteBatchInternal::PutValueHandle(WriteBatch* batch, const Slice& key,
+                                        const ValueHandle& handle) {
+  std::string value;
+  handle.EncodeTo(&value);
+  SetCount(batch, Count(batch) + 1);
+  batch->rep_.push_back(static_cast<char>(kTypeValueHandle));
+  PutLengthPrefixedSlice(&batch->rep_, key);
+  PutLengthPrefixedSlice(&batch->rep_, value);
 }
 
 }  // namespace leveldb

@@ -2,10 +2,9 @@
 // Created by 于承业 on 2023/4/1.
 //
 
-#include "leveldb/value_log.h"
-
 #include "db/filename.h"
 #include "db/value_log_impl.h"
+#include <atomic>
 #include <thread>
 
 #include "leveldb/env.h"
@@ -45,22 +44,23 @@ TEST(VLOG_TEST, Recover) {
   options.create_if_missing = true;
   options.max_vlog_file_size = 8 << 20;
   std::string dbname("testdb");
+  SequenceNumber seq = 1;
   DB* db;
   DB::Open(options, dbname, &db);
-  ValueLog* v;
-  ValueLog::Open(options, dbname, &v);
+  ValueLogImpl* v;
+  ValueLogImpl::Open(options, dbname, nullptr, &v);
 
   ValueHandle handle;
-  v->Add(WriteOptions(), "k01", "value01", &handle);
+  v->Put(WriteOptions(), "k01", "value01", seq++, &handle);
   assert(handle == ValueHandle(1, 0, 0, 12));
-  v->Add(WriteOptions(), "k02", "value02", &handle);
+  v->Put(WriteOptions(), "k02", "value02", seq++, &handle);
   assert(handle == ValueHandle(1, 0, 12, 12));
-  v->Add(WriteOptions(), "k03", "value03", &handle);
+  v->Put(WriteOptions(), "k03", "value03", seq++, &handle);
   assert(handle == ValueHandle(1, 0, 24, 12));
 
   delete v;
 
-  ValueLog::Open(options, dbname, &v);
+  ValueLogImpl::Open(options, dbname, nullptr, &v);
 
   std::string value;
   v->Get(ReadOptions(), ValueHandle(1, 0, 0, 12), &value);
@@ -70,20 +70,20 @@ TEST(VLOG_TEST, Recover) {
   v->Get(ReadOptions(), ValueHandle(1, 0, 24, 0), &value);
   ASSERT_EQ(value, "value03");
 
-  v->Add(WriteOptions(), "k04", "value04", &handle);
+  v->Put(WriteOptions(), "k04", "value04", seq++, &handle);
   ASSERT_EQ(handle, ValueHandle(1, 0, 36, 12));
-  v->Add(WriteOptions(), "k05", "value05", &handle);
+  v->Put(WriteOptions(), "k05", "value05", seq++, &handle);
   ASSERT_EQ(handle, ValueHandle(1, 0, 48, 12));
-  v->Add(WriteOptions(), "k06", "value06", &handle);
+  v->Put(WriteOptions(), "k06", "value06", seq++, &handle);
   ASSERT_EQ(handle, ValueHandle(1, 0, 60, 12));
 
   // simulate broken .vlog file with last few records lost caused by OS crash
   for (int i = 60; i < 72; i++) {
     delete v;
     options.env->TruncateFile(VLogFileName(dbname, 1), i);
-    ValueLog::Open(options, dbname, &v);
+    ValueLogImpl::Open(options, dbname, nullptr, &v);
 
-    v->Add(WriteOptions(), "k06", "value06", &handle);
+    v->Put(WriteOptions(), "k06", "value06", seq++, &handle);
     ASSERT_EQ(handle, ValueHandle(1, 0, 60, 12));
   }
 
@@ -92,20 +92,20 @@ TEST(VLOG_TEST, Recover) {
   for (int i = 0; size <= options.max_vlog_file_size / 2; i++) {
     Slice key("k0" + std::to_string(i + 7));
     Slice val("value0" + std::to_string(i + 7));
-    v->Add(WriteOptions(), key, val, &handle);
+    v->Put(WriteOptions(), key, val, seq++, &handle);
     ASSERT_EQ(handle, ValueHandle(1, 0, size, SizeOf(key, val)));
     size += SizeOf(key, val);
     num_entries++;
   }
 
   delete v;
-  ValueLog::Open(options, dbname, &v);
+  ValueLogImpl::Open(options, dbname, nullptr, &v);
 
   size = 0;
   for (int i = 1; i <= num_entries; i++) {
     Slice key("k1" + std::to_string(i));
     Slice val("value1" + std::to_string(i));
-    v->Add(WriteOptions(), key, val, &handle);
+    v->Put(WriteOptions(), key, val, seq++, &handle);
     ASSERT_EQ(handle, ValueHandle(2, 0, size, SizeOf(key, val)));
     size += SizeOf(key, val);
   }
@@ -125,7 +125,7 @@ TEST(VLOG_TEST, Recover) {
   for (int i = 1; i <= 1000000; i++) {
     Slice key("k1" + std::to_string(i));
     Slice val("value1" + std::to_string(i));
-    s = v->Add(WriteOptions(), key, val, &handle);
+    s = v->Put(WriteOptions(), key, val, seq++, &handle);
     ASSERT_TRUE(s.ok());
     size += SizeOf(key, val);
   }
@@ -146,8 +146,9 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
   std::string dbname("testdb");
   DB* db;
   DB::Open(options, dbname, &db);
-  ValueLog* v;
-  ValueLog::Open(options, dbname, &v);
+  ValueLogImpl* v;
+  ValueLogImpl::Open(options, dbname, nullptr, &v);
+  std::atomic<SequenceNumber> seq{1};
   std::deque<std::pair<ValueHandle, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);
@@ -165,12 +166,12 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
 
   for (int i = 0; i < n_writers; i++) {
     wth[i] = new std::thread(
-        [&lk, &kvq, &v, &cv, per_writer](int k) {
+        [&lk, &kvq, &v, &cv, &seq, per_writer](int k) {
           ValueHandle handle_;
           for (int j = k * per_writer; j < (k + 1) * per_writer; ++j) {
             std::string key("k0" + std::to_string(j));
             std::string val("value0" + std::to_string(j));
-            auto s = v->Add(WriteOptions(), key, val, &handle_);
+            auto s = v->Put(WriteOptions(), key, val, seq++, &handle_);
             ASSERT_TRUE(s.ok());
             lk.Lock();
             kvq.emplace_back(handle_, val);

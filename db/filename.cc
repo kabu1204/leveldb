@@ -41,7 +41,11 @@ std::string TableFileName(const std::string& dbname, uint64_t number) {
 
 std::string VLogFileName(const std::string& dbname, uint64_t number) {
   assert(number > 0);
-  return MakeFileName(dbname, number, "vlog"); // leveldb value table
+  return MakeFileName(dbname, number, "vlog");  // leveldb value table
+}
+
+std::string VLogHintFileName(const std::string& dbname) {
+  return dbname + "/VLOG.HINT";
 }
 
 // starting from leveldb v1.14, the .sst suffix is deprecated, using .ldb suffix

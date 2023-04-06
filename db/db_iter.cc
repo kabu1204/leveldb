@@ -188,6 +188,7 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
           SaveKey(ikey.user_key, skip);
           skipping = true;
           break;
+        case kTypeValueHandle:
         case kTypeValue:
           if (skipping &&
               user_comparator_->Compare(ikey.user_key, *skip) <= 0) {

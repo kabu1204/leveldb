@@ -194,7 +194,7 @@ class LOCKABLE RWMutex : public RWLock {
   void RUnlock() UNLOCK_FUNCTION() override {
     std::unique_lock<std::mutex> lk(mu_);
     readers_ -= 0b10;
-    if (readers_ == 0) cv_.notify_all();
+    if (readers_ == 0) cv_.notify_one();
   }
 
  private:

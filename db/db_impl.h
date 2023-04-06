@@ -25,6 +25,7 @@ class TableCache;
 class Version;
 class VersionEdit;
 class VersionSet;
+class ValueLogImpl;
 
 class DBImpl : public DB {
  public:
@@ -71,8 +72,9 @@ class DBImpl : public DB {
   // bytes.
   void RecordReadSample(Slice key);
 
- private:
+ protected:
   friend class DB;
+  friend class ValueLogImpl;
   struct CompactionState;
   struct Writer;
 
@@ -203,6 +205,18 @@ class DBImpl : public DB {
   Status bg_error_ GUARDED_BY(mutex_);
 
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
+};
+
+// Information kept for every waiting writer
+struct DBImpl::Writer {
+  explicit Writer(port::Mutex* mu)
+      : batch(nullptr), sync(false), done(false), cv(mu) {}
+
+  Status status;
+  WriteBatch* batch;
+  bool sync;
+  bool done;
+  port::CondVar cv;
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

@@ -5,9 +5,11 @@
 #ifndef LEVELDB_VLOG_H
 #define LEVELDB_VLOG_H
 
-#include "leveldb/options.h"
+#include "db/value_batch.h"
+
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
+#include "leveldb/options.h"
 
 #include "table/format.h"
 #include "util/coding.h"
@@ -17,7 +19,8 @@ namespace leveldb {
 class VLogBuilder {
  public:
   VLogBuilder(const Options& options, AppendableRandomAccessFile* file,
-              bool reuse = false, uint32_t offset = 0, uint32_t num_entries = 0);
+              bool reuse = false, uint32_t offset = 0,
+              uint32_t num_entries = 0);
 
   VLogBuilder(const VLogBuilder&) = delete;
   VLogBuilder& operator=(const VLogBuilder&) = delete;
@@ -26,6 +29,8 @@ class VLogBuilder {
 
   // Add a record to the file_ in append-only manner
   void Add(const Slice& key, const Slice& value, ValueHandle* handle);
+
+  void AddBatch(const ValueBatch* batch);
 
   void Flush();
 
