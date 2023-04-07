@@ -36,6 +36,8 @@ class LEVELDB_EXPORT Status {
   // Return a success status.
   static Status OK() { return Status(); }
 
+  static Status FoundValueHandle() { return Status(kValueHandle, "", ""); }
+
   // Return error status of an appropriate type.
   static Status NotFound(const Slice& msg, const Slice& msg2 = Slice()) {
     return Status(kNotFound, msg, msg2);
@@ -52,6 +54,8 @@ class LEVELDB_EXPORT Status {
   static Status IOError(const Slice& msg, const Slice& msg2 = Slice()) {
     return Status(kIOError, msg, msg2);
   }
+
+  bool IsValueHandle() const { return code() == kValueHandle; }
 
   // Returns true iff the status indicates success.
   bool ok() const { return (state_ == nullptr); }
@@ -78,11 +82,12 @@ class LEVELDB_EXPORT Status {
  private:
   enum Code {
     kOk = 0,
-    kNotFound = 1,
-    kCorruption = 2,
-    kNotSupported = 3,
-    kInvalidArgument = 4,
-    kIOError = 5
+    kValueHandle = 1,
+    kNotFound = 2,
+    kCorruption = 3,
+    kNotSupported = 4,
+    kInvalidArgument = 5,
+    kIOError = 6
   };
 
   Code code() const {

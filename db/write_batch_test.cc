@@ -23,6 +23,7 @@ static std::string PrintContents(WriteBatch* b) {
     ParsedInternalKey ikey;
     EXPECT_TRUE(ParseInternalKey(iter->key(), &ikey));
     switch (ikey.type) {
+      case kTypeValueHandle:
       case kTypeValue:
         state.append("Put(");
         state.append(ikey.user_key.ToString());

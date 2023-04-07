@@ -6,6 +6,7 @@
 #define LEVELDB_VALUE_BATCH_H
 
 #include "db/dbformat.h"
+#include <vector>
 
 #include "leveldb/write_batch.h"
 

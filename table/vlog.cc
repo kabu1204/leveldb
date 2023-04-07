@@ -337,7 +337,8 @@ Status ValueBatch::ToWriteBatch(WriteBatch* batch) {
       }
       assert(found == DecodeFixed64(p + key_len - sizeof(uint64_t)) - sequence);
       handles_[found].EncodeTo(&handle_encoding);
-      batch->Put(key, Slice(handle_encoding));
+      WriteBatchInternal::Put(batch, key, Slice(handle_encoding),
+                              kTypeValueHandle);
       found++;
       p += key_len + val_len;
     }

@@ -254,6 +254,7 @@ enum SaverState {
 };
 struct Saver {
   SaverState state;
+  ValueType valueType;
   const Comparator* ucmp;
   Slice user_key;
   std::string* value;
@@ -266,6 +267,7 @@ static void SaveValue(void* arg, const Slice& ikey, const Slice& v) {
     s->state = kCorrupt;
   } else {
     if (s->ucmp->Compare(parsed_key.user_key, s->user_key) == 0) {
+      s->valueType = parsed_key.type;
       s->state = (parsed_key.type != kTypeDeletion) ? kFound : kDeleted;
       if (s->state == kFound) {
         s->value->assign(v.data(), v.size());
@@ -322,7 +324,7 @@ void Version::ForEachOverlapping(Slice user_key, Slice internal_key, void* arg,
 }
 
 Status Version::Get(const ReadOptions& options, const LookupKey& k,
-                    std::string* value, GetStats* stats) {
+                    std::string* value, GetStats* stats, ValueType* valueType) {
   stats->seek_file = nullptr;
   stats->seek_file_level = -1;
 
@@ -396,6 +398,8 @@ Status Version::Get(const ReadOptions& options, const LookupKey& k,
   state.saver.value = value;
 
   ForEachOverlapping(state.saver.user_key, state.ikey, &state, &State::Match);
+
+  if (valueType != nullptr) *valueType = state.saver.valueType;
 
   return state.found ? state.s : Status::NotFound(Slice());
 }

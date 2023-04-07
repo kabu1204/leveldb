@@ -35,6 +35,7 @@ class LEVELDB_EXPORT WriteBatch {
   class LEVELDB_EXPORT Handler {
    public:
     virtual ~Handler();
+    virtual void PutValueHandle(const Slice& key, const Slice& value);
     virtual void Put(const Slice& key, const Slice& value) = 0;
     virtual void Delete(const Slice& key) = 0;
   };

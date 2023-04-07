@@ -144,7 +144,7 @@ struct LEVELDB_EXPORT Options {
   // If true, separate key-value pairs:
   //  1. store value in ValueLogImpl
   //  2. store <key, ValueHandle> in LSMTree
-  bool use_vlog = false;
+  bool blob_db = false;
 
   // soft limit of vlog file size
   size_t max_vlog_file_size = 32 << 20;

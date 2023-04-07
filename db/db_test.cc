@@ -414,6 +414,7 @@ class DBTest : public testing::Test {
           }
           first = false;
           switch (ikey.type) {
+            case kTypeValueHandle:
             case kTypeValue:
               result += iter->value().ToString();
               break;

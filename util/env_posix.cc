@@ -501,8 +501,9 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     assert(reserved_ > file_size);
     assert(!(reserved_ & (page_size_ - 1)));
     ExtendMmapSize();
-    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(), cap_,
-           reserved_);
+    //    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(),
+    //    cap_,
+    //           reserved_);
   }
 
   PosixMmapAppendableFile(const PosixMmapAppendableFile&) = delete;
@@ -513,7 +514,8 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     if(ftruncate(fd_, len_)<0){
       printf("failed to truncate file when closing\n");
     }
-    printf("[LOG] truncate file size from %lu to %lu\n", cap_, len_.load());
+    //    printf("[LOG] truncate file size from %lu to %lu\n", cap_,
+    //    len_.load());
     close(fd_);
   }
 
@@ -565,7 +567,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     if(::msync(mmap_base_+prev_sync_, len_ - prev_sync_, MS_SYNC)<0){
       status_ =  Status::IOError("failed to msync()");
     }
-    printf("[LOG] Sync from %lu to %lu\n", prev_sync_, len_.load());
+    //    printf("[LOG] Sync from %lu to %lu\n", prev_sync_, len_.load());
     prev_sync_ = len_;
     return status_;
   }
@@ -600,7 +602,8 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
         status_ = Status::IOError("failed to mmap reserved space");
         return status_;
       }
-      printf("[LOG] Extended reserved space from %lu to %lu\n", reserved_>>1, reserved_);
+      //      printf("[LOG] Extended reserved space from %lu to %lu\n",
+      //      reserved_>>1, reserved_);
       oldcap = 0;
     }
 
@@ -610,7 +613,8 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
       return status_;
     }
 
-    printf("[LOG] Extended file mapping from %lu to %lu\n", oldcap, newcap);
+    //    printf("[LOG] Extended file mapping from %lu to %lu\n", oldcap,
+    //    newcap);
     cap_ = newcap;
     return status_;
   }

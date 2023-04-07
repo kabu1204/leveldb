@@ -11,11 +11,6 @@
 
 namespace leveldb {
 
-Status WriteBatchInternal::InsertInto(const WriteBatch* batch, ValueLogImpl* vlog){
-//  WriteBatch*
-  return Status::OK();
-}
-
 static size_t EncodeInternalKey(const Slice& key, uint64_t seq, char* ptr) {
   std::memcpy(ptr, key.data(), key.size());
   EncodeFixed64(ptr+key.size(), seq);
@@ -103,7 +98,7 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
       value->assign(v.data(), v.size());
     } else {
       delete iter;
-      return Status::NotFound("value not found");
+      return Status::NotFound("value not found", iter->status().ToString());
     }
     delete iter;
     rwlock_.RLock();
@@ -127,6 +122,7 @@ Status ValueLogImpl::Recover() {
   FileType type;
 
   // scan over all the .vlog files
+  env_->CreateDir(dbname_);
   env_->GetChildren(dbname_, &fnames);
   for (std::string& filename : fnames) {
     if (ParseFileName(filename, &number, &type) && type == kVLogFile) {
@@ -180,7 +176,7 @@ Status ValueLogImpl::Recover() {
       /*
        * reuse the .vlog file
        */
-      Log(options_.info_log, "reusing %s, ValidSize/FileSize = %llu/%llu",
+      Log(options_.info_log, "Reusing %s, ValidSize/FileSize = %llu/%llu",
           filename.c_str(), offset, ro_files_[vlog_file_number_]->file_size);
       reuse = true;
       delete ro_files_[vlog_file_number_];

@@ -142,7 +142,7 @@ class ValueLogImpl {
   ValueLogImpl& operator=(const ValueLogImpl&) = delete;
 
   /*
-   * concurrent Add() is unsafe
+   * concurrent Put() is unsafe
    */
   Status Put(const WriteOptions& options, const Slice& key, const Slice& value,
              uint64_t seq, ValueHandle* handle);

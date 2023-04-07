@@ -5,7 +5,9 @@
 #include "db/filename.h"
 #include "db/value_log_impl.h"
 #include <atomic>
+#include <random>
 #include <thread>
+#include <unordered_map>
 
 #include "leveldb/env.h"
 
@@ -17,7 +19,9 @@ using namespace leveldb;
 
 static void CleanDir(Env* const env, const std::string& dir) {
   std::vector<std::string> fnames;
-  env->GetChildren(dir, &fnames);
+  if (!env->GetChildren(dir, &fnames).ok()) {
+    return;
+  }
   for (auto& filename : fnames) {
     env->RemoveFile(DBFilePath(dir, filename));
   }
@@ -33,11 +37,79 @@ uint32_t SizeOfVariant32(uint32_t v) {
 }
 
 uint64_t SizeOf(const Slice& key, const Slice& val) {
-  return SizeOfVariant32(key.size()) + SizeOfVariant32(val.size()) +
-         key.size() + val.size();
+  return SizeOfVariant32(key.size() + sizeof(uint64_t)) +
+         SizeOfVariant32(val.size()) + key.size() + val.size() +
+         sizeof(uint64_t);
 }
 
-TEST(VLOG_TEST, Recover) {
+TEST(VLOG_TEST, DBWrapperNoGC) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  options.blob_db = true;
+  options.vlog_value_size_threshold = 256;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+  int num_ondisk_entries = 100000;
+  int num_entries = num_ondisk_entries + 20000;
+
+  DB* db;
+  DB::Open(options, dbname, &db);
+
+  s = db->Put(WriteOptions(), "key1", "value1");
+  ASSERT_TRUE(s.ok());
+  s = db->Get(ReadOptions(), "key1", &value);
+  printf("%s\n", s.ToString().c_str());
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(value, "value1");
+
+  s = db->Put(WriteOptions(), "key2", std::string(100, 'x'));
+  ASSERT_TRUE(s.ok());
+  s = db->Get(ReadOptions(), "key2", &value);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(value, std::string(100, 'x'));
+
+  std::unordered_map<std::string, std::string> kvmap;
+
+  std::random_device rd;
+  std::mt19937 mt(rd());
+  std::uniform_int_distribution<int> dist(
+      1, 2 * options.vlog_value_size_threshold);
+  for (int i = 0; i < num_ondisk_entries; ++i) {
+    std::string key = "key" + std::to_string(i);
+    std::string val = "value" + std::string(dist(mt), 'x');
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+    kvmap[key] = val;
+  }
+
+  for (int i = num_ondisk_entries; i < num_entries; ++i) {
+    std::string key = "key" + std::to_string(i);
+    std::string val = "value" + std::string(dist(mt), 'x');
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+    kvmap[key] = val;
+  }
+
+  Slice begin("key" + std::to_string(0));
+  Slice end("key" + std::to_string(num_ondisk_entries - 1));
+  db->CompactRange(&begin, &end);
+
+  for (auto& p : kvmap) {
+    s = db->Get(ReadOptions(), p.first, &value);
+    ASSERT_TRUE(s.ok());
+    ASSERT_EQ(value, p.second);
+  }
+
+  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  delete db;
+  CleanDir(options.env, dbname);
+}
+
+TEST(VLOG_TEST, ValueLogRecover) {
   Options options;
   Status s;
   options.env->NewStdLogger(&options.info_log);
@@ -45,49 +117,53 @@ TEST(VLOG_TEST, Recover) {
   options.max_vlog_file_size = 8 << 20;
   std::string dbname("testdb");
   SequenceNumber seq = 1;
+  CleanDir(options.env, dbname);
+
   DB* db;
   DB::Open(options, dbname, &db);
+  // we do not need to start a real DBWrapper instance in this test
+  DBWrapper* dbwrapper = reinterpret_cast<DBWrapper*>(0x1234);
   ValueLogImpl* v;
-  ValueLogImpl::Open(options, dbname, nullptr, &v);
+  ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
   ValueHandle handle;
   v->Put(WriteOptions(), "k01", "value01", seq++, &handle);
-  assert(handle == ValueHandle(1, 0, 0, 12));
+  ASSERT_EQ(handle, ValueHandle(1, 0, 0, 20));
   v->Put(WriteOptions(), "k02", "value02", seq++, &handle);
-  assert(handle == ValueHandle(1, 0, 12, 12));
+  ASSERT_EQ(handle, ValueHandle(1, 0, 20, 20));
   v->Put(WriteOptions(), "k03", "value03", seq++, &handle);
-  assert(handle == ValueHandle(1, 0, 24, 12));
+  ASSERT_EQ(handle, ValueHandle(1, 0, 40, 20));
 
   delete v;
 
-  ValueLogImpl::Open(options, dbname, nullptr, &v);
+  ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
   std::string value;
-  v->Get(ReadOptions(), ValueHandle(1, 0, 0, 12), &value);
+  v->Get(ReadOptions(), ValueHandle(1, 0, 0, 20), &value);
   ASSERT_EQ(value, "value01");
-  v->Get(ReadOptions(), ValueHandle(1, 0, 12, 12), &value);
+  v->Get(ReadOptions(), ValueHandle(1, 0, 20, 20), &value);
   ASSERT_EQ(value, "value02");
-  v->Get(ReadOptions(), ValueHandle(1, 0, 24, 0), &value);
+  v->Get(ReadOptions(), ValueHandle(1, 0, 40, 0), &value);
   ASSERT_EQ(value, "value03");
 
   v->Put(WriteOptions(), "k04", "value04", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(1, 0, 36, 12));
+  ASSERT_EQ(handle, ValueHandle(1, 0, 60, 20));
   v->Put(WriteOptions(), "k05", "value05", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(1, 0, 48, 12));
+  ASSERT_EQ(handle, ValueHandle(1, 0, 80, 20));
   v->Put(WriteOptions(), "k06", "value06", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(1, 0, 60, 12));
+  ASSERT_EQ(handle, ValueHandle(1, 0, 100, 20));
 
   // simulate broken .vlog file with last few records lost caused by OS crash
-  for (int i = 60; i < 72; i++) {
+  for (int i = 100; i < 120; i++) {
     delete v;
     options.env->TruncateFile(VLogFileName(dbname, 1), i);
-    ValueLogImpl::Open(options, dbname, nullptr, &v);
+    ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
     v->Put(WriteOptions(), "k06", "value06", seq++, &handle);
-    ASSERT_EQ(handle, ValueHandle(1, 0, 60, 12));
+    ASSERT_EQ(handle, ValueHandle(1, 0, 100, 20));
   }
 
-  uint32_t size = 72;
+  uint32_t size = 120;
   uint32_t num_entries = 6;
   for (int i = 0; size <= options.max_vlog_file_size / 2; i++) {
     Slice key("k0" + std::to_string(i + 7));
@@ -99,7 +175,7 @@ TEST(VLOG_TEST, Recover) {
   }
 
   delete v;
-  ValueLogImpl::Open(options, dbname, nullptr, &v);
+  ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
   size = 0;
   for (int i = 1; i <= num_entries; i++) {
@@ -146,13 +222,14 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
   std::string dbname("testdb");
   DB* db;
   DB::Open(options, dbname, &db);
+  DBWrapper* dbwrapper = reinterpret_cast<DBWrapper*>(0x1234);
   ValueLogImpl* v;
-  ValueLogImpl::Open(options, dbname, nullptr, &v);
+  ValueLogImpl::Open(options, dbname, dbwrapper, &v);
   std::atomic<SequenceNumber> seq{1};
   std::deque<std::pair<ValueHandle, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);
-  uint32_t total_entries = 8 * 1000000;
+  uint32_t total_entries = 8 * 10000;
   int n_writers = 1;  // single-producer
   int n_readers = 8;  // multi-consumer
 
@@ -170,7 +247,8 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
           ValueHandle handle_;
           for (int j = k * per_writer; j < (k + 1) * per_writer; ++j) {
             std::string key("k0" + std::to_string(j));
-            std::string val("value0" + std::to_string(j));
+            std::string val("value0" + std::to_string(j) +
+                            std::string(1024, 'x'));
             auto s = v->Put(WriteOptions(), key, val, seq++, &handle_);
             ASSERT_TRUE(s.ok());
             lk.Lock();

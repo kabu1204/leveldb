@@ -20,9 +20,6 @@ class ValueBatch;
 
 class DBWrapper : public DBImpl {
  public:
-  DBWrapper(const Options& options, const std::string& dbname)
-      : DBImpl(options, dbname) {}
-
   DBWrapper(const DBWrapper&) = delete;
   DBWrapper& operator=(const DBWrapper&) = delete;
 
@@ -33,9 +30,17 @@ class DBWrapper : public DBImpl {
   // Note: consider setting options.sync = true.
   Status Write(const WriteOptions& options, WriteBatch* updates) override;
 
+  Status Get(const ReadOptions& options, const Slice& key,
+             std::string* value) override;
+
+  std::string DebugString();
+
  private:
   friend class DB;
   friend class ValueLogImpl;
+
+  DBWrapper(const Options& options, const std::string& dbname)
+      : DBImpl(options, dbname), vlog_(nullptr) {}
 
   Status WriteLSM(const WriteOptions& options, WriteBatch*);
 
