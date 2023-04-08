@@ -42,6 +42,149 @@ uint64_t SizeOf(const Slice& key, const Slice& val) {
          sizeof(uint64_t);
 }
 
+TEST(VLOG_TEST, DBWrapperIterator) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  options.blob_db = true;
+  options.vlog_value_size_threshold = 256;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+  int num_ondisk_batches = 10000;
+  int num_batches = num_ondisk_batches + 200;
+  int per_batch = 100;
+
+  DB* db;
+  DB::Open(options, dbname, &db);
+
+  std::unordered_map<std::string, std::string> kvmap;
+
+  std::random_device rd;
+  std::mt19937 mt(rd());
+  std::uniform_int_distribution<int> dist(
+      1, 2 * options.vlog_value_size_threshold);
+  for (int i = 0; i < num_ondisk_batches; ++i) {
+    WriteBatch batch;
+    for (int j = 0; j < per_batch; ++j) {
+      std::string key = "key" + std::to_string(i * per_batch + j);
+      key = std::to_string(std::hash<std::string>{}(key));
+      std::string val = "value" + std::string(dist(mt), 'x');
+      kvmap[key] = val;
+      batch.Put(key, val);
+    }
+    s = db->Write(WriteOptions(), &batch);
+    ASSERT_TRUE(s.ok());
+  }
+
+  for (int i = num_ondisk_batches; i < num_batches; ++i) {
+    WriteBatch batch;
+    for (int j = 0; j < per_batch; ++j) {
+      std::string key = "key" + std::to_string(i * per_batch + j);
+      key = std::to_string(std::hash<std::string>{}(key));
+      std::string val = "value" + std::string(dist(mt), 'x');
+      kvmap[key] = val;
+      batch.Put(key, val);
+    }
+    s = db->Write(WriteOptions(), &batch);
+    ASSERT_TRUE(s.ok());
+  }
+
+  Iterator* iter = db->NewIterator(ReadOptions());
+
+  int reverse_point = num_batches * per_batch / 2;
+  for (iter->SeekToFirst(); iter->Valid() && reverse_point > 0;
+       iter->Next(), reverse_point--) {
+    std::string expected = kvmap[iter->key().ToString()];
+    ASSERT_EQ(iter->value(), expected);
+  }
+  for (; iter->Valid(); iter->Prev()) {
+    std::string expected = kvmap[iter->key().ToString()];
+    ASSERT_EQ(iter->value(), expected);
+  }
+
+  reverse_point = num_batches * per_batch / 2;
+  for (iter->SeekToLast(); iter->Valid(), reverse_point > 0;
+       iter->Prev(), reverse_point--) {
+    std::string expected = kvmap[iter->key().ToString()];
+    ASSERT_EQ(iter->value(), expected);
+  }
+  for (; iter->Valid(); iter->Next()) {
+    std::string expected = kvmap[iter->key().ToString()];
+    ASSERT_EQ(iter->value(), expected);
+  }
+  delete iter;
+
+  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  delete db;
+  CleanDir(options.env, dbname);
+}
+
+TEST(VLOG_TEST, DBWrapperWriteBatch) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  options.blob_db = true;
+  options.vlog_value_size_threshold = 256;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+  int num_ondisk_batches = 1000;
+  int num_batches = num_ondisk_batches + 200;
+  int per_batch = 100;
+
+  DB* db;
+  DB::Open(options, dbname, &db);
+
+  std::unordered_map<std::string, std::string> kvmap;
+
+  std::random_device rd;
+  std::mt19937 mt(rd());
+  std::uniform_int_distribution<int> dist(
+      1, 2 * options.vlog_value_size_threshold);
+  for (int i = 0; i < num_ondisk_batches; ++i) {
+    WriteBatch batch;
+    for (int j = 0; j < per_batch; ++j) {
+      std::string key = "key" + std::to_string(i * per_batch + j);
+      std::string val = "value" + std::string(dist(mt), 'x');
+      kvmap[key] = val;
+      batch.Put(key, val);
+    }
+    s = db->Write(WriteOptions(), &batch);
+    ASSERT_TRUE(s.ok());
+  }
+
+  for (int i = num_ondisk_batches; i < num_batches; ++i) {
+    WriteBatch batch;
+    for (int j = 0; j < per_batch; ++j) {
+      std::string key = "key" + std::to_string(i * per_batch + j);
+      std::string val = "value" + std::string(dist(mt), 'x');
+      kvmap[key] = val;
+      batch.Put(key, val);
+    }
+    s = db->Write(WriteOptions(), &batch);
+    ASSERT_TRUE(s.ok());
+  }
+
+  Slice begin("key" + std::to_string(0));
+  Slice end("key" + std::to_string(num_ondisk_batches * per_batch - 1));
+  db->CompactRange(&begin, &end);
+
+  for (auto& p : kvmap) {
+    s = db->Get(ReadOptions(), p.first, &value);
+    ASSERT_TRUE(s.ok());
+    ASSERT_EQ(value, p.second);
+  }
+
+  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  delete db;
+  CleanDir(options.env, dbname);
+}
+
 TEST(VLOG_TEST, DBWrapperNoGC) {
   Options options;
   Status s;
@@ -103,6 +246,11 @@ TEST(VLOG_TEST, DBWrapperNoGC) {
     ASSERT_TRUE(s.ok());
     ASSERT_EQ(value, p.second);
   }
+
+  s = db->Delete(WriteOptions(), "key1");
+  ASSERT_TRUE(s.ok());
+  s = db->Get(ReadOptions(), "key1", &value);
+  ASSERT_TRUE(s.IsNotFound());
 
   printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
   delete db;

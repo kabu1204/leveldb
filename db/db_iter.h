@@ -13,6 +13,7 @@
 namespace leveldb {
 
 class DBImpl;
+class ValueLogImpl;
 
 // Return a new iterator that converts internal keys (yielded by
 // "*internal_iter") that were live at the specified "sequence" number
@@ -20,6 +21,11 @@ class DBImpl;
 Iterator* NewDBIterator(DBImpl* db, const Comparator* user_key_comparator,
                         Iterator* internal_iter, SequenceNumber sequence,
                         uint32_t seed);
+
+Iterator* NewBlobDBIterator(DBImpl* db, ValueLogImpl* vlog,
+                            const Comparator* user_key_comparator,
+                            Iterator* internal_iter, SequenceNumber sequence,
+                            uint32_t seed);
 
 }  // namespace leveldb
 

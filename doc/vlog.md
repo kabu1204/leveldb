@@ -1,5 +1,11 @@
 # Value Log
 
+## TODO
+
+1. AsyncIterator to speedup range scan for BlobDB.
+2. `class DBWrapper` is handy for developing, apply changes
+   to `DBImpl` after I finish everything.
+
 ## Overview
 
 I've thought of 2 options to store ValueHandle(value pointer) in
@@ -51,4 +57,3 @@ But it's still hard to deal with the snapshot.
 
 1. we need a method like ``DBImpl::GetSmallesSnapshot()``,
 2. we need to modify ``DBImpl::Write()`` to set seqence number before inserting to vlog,
-3. 

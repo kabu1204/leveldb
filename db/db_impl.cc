@@ -976,8 +976,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       }
 
       last_sequence_for_key = ikey.sequence;
-      Log(options_.info_log, "ikey.sequence: %llu",
-          ikey.sequence);
     }
 #ifndef NDEBUG
     Log(options_.info_log,

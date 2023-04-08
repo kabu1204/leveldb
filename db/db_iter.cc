@@ -7,8 +7,11 @@
 #include "db/db_impl.h"
 #include "db/dbformat.h"
 #include "db/filename.h"
+#include "db/value_log_impl.h"
+
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
+
 #include "port/port.h"
 #include "util/logging.h"
 #include "util/mutexlock.h"
@@ -83,6 +86,11 @@ class DBIter : public Iterator {
   void SeekToFirst() override;
   void SeekToLast() override;
 
+  ValueType valueType() const {
+    assert(valid_);
+    return valueType_;
+  }
+
  private:
   void FindNextUserEntry(bool skipping, std::string* skip);
   void FindPrevUserEntry();
@@ -107,6 +115,7 @@ class DBIter : public Iterator {
   }
 
   DBImpl* db_;
+  ValueType valueType_;  // current key's ValueType
   const Comparator* const user_comparator_;
   Iterator* const iter_;
   SequenceNumber const sequence_;
@@ -195,6 +204,7 @@ void DBIter::FindNextUserEntry(bool skipping, std::string* skip) {
             // Entry hidden
           } else {
             valid_ = true;
+            valueType_ = ikey.type;
             saved_key_.clear();
             return;
           }
@@ -272,6 +282,7 @@ void DBIter::FindPrevUserEntry() {
     ClearSavedValue();
     direction_ = kForward;
   } else {
+    valueType_ = value_type;
     valid_ = true;
   }
 }
@@ -308,12 +319,84 @@ void DBIter::SeekToLast() {
   FindPrevUserEntry();
 }
 
+class BlobDBIter : public Iterator {
+ public:
+  BlobDBIter(DBIter* dbiter, ValueLogImpl* vlog)
+      : iter_(dbiter), vlog_(vlog), isValueHandle_(false) {}
+  BlobDBIter(const BlobDBIter&) = delete;
+  BlobDBIter& operator=(const BlobDBIter&) = delete;
+
+  ~BlobDBIter() override { delete iter_; }
+  bool Valid() const override { return iter_->Valid(); }
+  Slice key() const override {
+    assert(iter_->Valid());
+    return iter_->key();
+  }
+  Slice value() const override {
+    assert(iter_->Valid());
+    return isValueHandle_ ? indirect_value_ : iter_->value();
+  }
+  Status status() const override { return iter_->status(); }
+
+  void Next() override {
+    iter_->Next();
+    MaybeIndirectValue();
+  }
+
+  void Prev() override {
+    iter_->Prev();
+    MaybeIndirectValue();
+  }
+
+  void Seek(const Slice& target) override {
+    iter_->Seek(target);
+    MaybeIndirectValue();
+  }
+
+  void SeekToFirst() override {
+    iter_->SeekToFirst();
+    MaybeIndirectValue();
+  }
+
+  void SeekToLast() override {
+    iter_->SeekToLast();
+    MaybeIndirectValue();
+  }
+
+ private:
+  void MaybeIndirectValue() {
+    if (iter_->Valid() && iter_->valueType() == kTypeValueHandle) {
+      ValueHandle handle;
+      Slice input(iter_->value());
+      handle.DecodeFrom(&input);
+      vlog_->Get(ReadOptions(), handle, &indirect_value_);
+      isValueHandle_ = true;
+    } else {
+      isValueHandle_ = false;
+    }
+  }
+
+  DBIter* iter_;
+  ValueLogImpl* vlog_;
+  std::string indirect_value_;
+  bool isValueHandle_;
+};
+
 }  // anonymous namespace
 
 Iterator* NewDBIterator(DBImpl* db, const Comparator* user_key_comparator,
                         Iterator* internal_iter, SequenceNumber sequence,
                         uint32_t seed) {
   return new DBIter(db, user_key_comparator, internal_iter, sequence, seed);
+}
+
+Iterator* NewBlobDBIterator(DBImpl* db, ValueLogImpl* vlog,
+                            const Comparator* user_key_comparator,
+                            Iterator* internal_iter, SequenceNumber sequence,
+                            uint32_t seed) {
+  DBIter* dbiter =
+      new DBIter(db, user_key_comparator, internal_iter, sequence, seed);
+  return new BlobDBIter(dbiter, vlog);
 }
 
 }  // namespace leveldb

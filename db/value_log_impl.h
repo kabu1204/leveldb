@@ -152,6 +152,10 @@ class ValueLogImpl {
   Status Get(const ReadOptions& options, const ValueHandle& handle,
              std::string* value);
 
+  //  Status MultiGet(const ReadOptions& options, std::vector<ValueHandle>&
+  //  handles,
+  //                  std::vector<std::string>* values);
+
   Status Recover();
 
   std::string DebugString();

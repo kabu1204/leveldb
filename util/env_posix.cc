@@ -500,7 +500,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
 
     assert(reserved_ > file_size);
     assert(!(reserved_ & (page_size_ - 1)));
-    ExtendMmapSize();
+    ExtendMmapSize(file_size);
     //    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(),
     //    cap_,
     //           reserved_);
@@ -540,7 +540,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
 
     WriteLock l(&rwlock);
     if (len_ + write_size > cap_) {
-      ExtendMmapSize();
+      ExtendMmapSize(len_ + write_size);
       if (!status_.ok()) {
         return status_;
       }
@@ -577,23 +577,22 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
   }
 
  private:
-
-  Status ExtendMmapSize() {
+  Status ExtendMmapSize(size_t need) {
     rwlock.AssertWLockHeld();
     size_t oldcap = cap_;
     size_t newcap = AlignBackward(oldcap + (oldcap >> 1), page_size_);
-    if (newcap < len_) {
-      newcap = AlignBackward(len_ + (len_>>1), page_size_); // 1.5 * len_
+    if (newcap < need) {
+      newcap = AlignBackward(need + (need >> 1), page_size_);  // 1.5 * need
     }
-    if(newcap < page_size_) {
+    if (newcap < page_size_) {
       newcap = page_size_;
     }
-    if(ftruncate(fd_, newcap) < 0){
+    if (ftruncate(fd_, newcap) < 0) {
       status_ = Status::IOError("failed to truncate file");
       return status_;
     }
 
-    if(newcap > reserved_) {
+    if (newcap > reserved_) {
       ::munmap(mmap_base_, reserved_);
       reserved_ = reserved_ << 1;
       mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,

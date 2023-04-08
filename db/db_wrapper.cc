@@ -4,6 +4,7 @@
 
 #include "db/db_wrapper.h"
 
+#include "db/db_iter.h"
 #include "db/filename.h"
 #include "db/memtable.h"
 #include "db/value_log_impl.h"
@@ -102,9 +103,6 @@ Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates) {
         status = large.ToWriteBatch(write_batch);
         write_batch->Append(small);
       }
-      Log(options_.info_log, "seq:(%llu, %u, %llu)",
-          WriteBatchInternal::Sequence(write_batch), large.NumEntries(),
-          WriteBatchInternal::Sequence(&small));
       assert(WriteBatchInternal::Sequence(write_batch) + large.NumEntries() ==
              WriteBatchInternal::Sequence(&small));
 
@@ -233,6 +231,19 @@ std::string DBWrapper::DebugString() {
   result += "\n";
   result += vlog_->DebugString();
   return result;
+}
+
+Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
+  SequenceNumber latest_snapshot;
+  uint32_t seed;
+  Iterator* iter = NewInternalIterator(options, &latest_snapshot, &seed);
+  return NewBlobDBIterator(
+      this, vlog_, user_comparator(), iter,
+      (options.snapshot != nullptr
+           ? static_cast<const SnapshotImpl*>(options.snapshot)
+                 ->sequence_number()
+           : latest_snapshot),
+      seed);
 }
 
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {

@@ -33,6 +33,8 @@ class DBWrapper : public DBImpl {
   Status Get(const ReadOptions& options, const Slice& key,
              std::string* value) override;
 
+  Iterator* NewIterator(const ReadOptions& options) override;
+
   std::string DebugString();
 
  private:
