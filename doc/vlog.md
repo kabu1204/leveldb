@@ -5,6 +5,8 @@
 1. AsyncIterator to speedup range scan for BlobDB.
 2. `class DBWrapper` is handy for developing, apply changes
    to `DBImpl` after I finish everything.
+3. mmap limiter for AppendableMmapFile
+4. use tmp_batch_ when BuildWriterGroup to avoid modifying user's writebatch
 
 ## Overview
 
@@ -57,3 +59,14 @@ But it's still hard to deal with the snapshot.
 
 1. we need a method like ``DBImpl::GetSmallesSnapshot()``,
 2. we need to modify ``DBImpl::Write()`` to set seqence number before inserting to vlog,
+
+## Garbage collection
+
+When we scan a record <K, V, Seq>, below are cases in which we need to keep the record:
+
+1. `Seq > db->smallest_snapshot`;
+2. `ptr = db->Get(smallest_snapshot, K)`, and ptr points to the record;
+
+### WriterGroup
+
+#### WriteCallback

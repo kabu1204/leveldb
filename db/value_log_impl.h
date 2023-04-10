@@ -52,13 +52,28 @@ class VLogRWFile {
   VLogRWFile& operator=(const VLogRWFile&) = delete;
 
   /*
-   * Ref()/Unref() are not thread-safe and need external synchronization.
+   * calling Ref() and Unref() concurrently needs external synchronization.
+   * See comments in Unref() below.
    */
   void Ref() { ++refs_; }
   void Unref() {
     --refs_;
     assert(refs_ >= 0);
     if (refs_ <= 0) {
+      /*
+       * There are chances that another thread calls Ref(), and current thread
+       * are deleting this. However, in ValueLogImpl, this never happens.
+       *
+       * ValueLogImpl will call Ref() when creating new VlogRWFile, so before it
+       * Unref() (i.e. finish building and creating another one), the refs_ will
+       * always be >= 1;
+       *
+       * Before ValueLogImpl Unref() this, concurrent Ref() and Unref() is safe,
+       * because refs_<=0 will always be false, the rwfile can never be deleted
+       * by mistake.
+       *
+       * After ValueLogImpl Unref() this, no more Ref() happens, so it's safe.
+       */
       delete this;
     }
   }
@@ -133,8 +148,8 @@ class VLogRWFile {
  */
 class ValueLogImpl {
  public:
-  static Status Open(const Options& options, const std::string& dbname,
-                     DBWrapper* db, ValueLogImpl** vlog);
+  static Status Open(const Options& options, const std::string& dbname, DB* db,
+                     ValueLogImpl** vlog);
 
   virtual ~ValueLogImpl();
 
@@ -160,18 +175,13 @@ class ValueLogImpl {
 
   std::string DebugString();
 
-  void BackgroundGC();
-
-  static void BGWork(void* vlog);
+  Status DoGC(uint64_t number);
 
  private:
   friend class ValueLog;
-  friend Status ValueLogImpl::Open(const Options& options,
-                                   const std::string& dbname, DBWrapper* db,
-                                   ValueLogImpl** vlog);
 
   explicit ValueLogImpl(const Options& options, const std::string& dbname,
-                        DBImpl* db);
+                        DB* db);
 
   uint64_t NewFileNumber() { return ++vlog_file_number_; }
 

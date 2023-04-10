@@ -42,6 +42,25 @@ uint64_t SizeOf(const Slice& key, const Slice& val) {
          sizeof(uint64_t);
 }
 
+TEST(DBIMPL_TEST, BuildWriterGroup) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+
+  DBImpl* dbImpl;
+  DB* db;
+  DB::Open(options, dbname, &db);
+  dbImpl = reinterpret_cast<DBImpl*>(db);
+
+  dbImpl->TEST_BuildWriterGroup();
+
+  delete db;
+}
+
 TEST(VLOG_TEST, DBWrapperIterator) {
   Options options;
   Status s;
@@ -57,8 +76,8 @@ TEST(VLOG_TEST, DBWrapperIterator) {
   int num_batches = num_ondisk_batches + 200;
   int per_batch = 100;
 
-  DB* db;
-  DB::Open(options, dbname, &db);
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
 
@@ -137,8 +156,8 @@ TEST(VLOG_TEST, DBWrapperWriteBatch) {
   int num_batches = num_ondisk_batches + 200;
   int per_batch = 100;
 
-  DB* db;
-  DB::Open(options, dbname, &db);
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
 
@@ -199,8 +218,8 @@ TEST(VLOG_TEST, DBWrapperNoGC) {
   int num_ondisk_entries = 100000;
   int num_entries = num_ondisk_entries + 20000;
 
-  DB* db;
-  DB::Open(options, dbname, &db);
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
 
   s = db->Put(WriteOptions(), "key1", "value1");
   ASSERT_TRUE(s.ok());

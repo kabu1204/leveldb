@@ -26,7 +26,7 @@ class ValueBatch {
   ValueBatch(const ValueBatch&) = default;
   ValueBatch& operator=(const ValueBatch&) = default;
 
-  void Put(SequenceNumber s, const Slice& key, const Slice& value);
+  void Put(SequenceNumber seq, const Slice& key, const Slice& value);
 
   Status ToWriteBatch(WriteBatch* batch);
 
@@ -35,6 +35,21 @@ class ValueBatch {
   const char* data() const { return rep_.data(); }
 
   size_t size() const { return rep_.size(); }
+
+  static char* EncodeInternalKey(char* ptr, const Slice& user_key,
+                                 uint64_t seq);
+
+  static uint64_t DecodeInternalKey(const char* ptr, const char* end,
+                                    Slice* user_key);
+
+  static void PutInternalKey(std::string* dst, const Slice& user_key,
+                             uint64_t seq);
+
+  static bool GetInternalKeySeq(Slice* input, size_t n, Slice* user_key,
+                                uint64_t* seq);
+
+  static bool GetVLogRecord(Slice* input, Slice* user_key, Slice* value,
+                            uint64_t* seq);
 
  private:
   friend class VLogBuilder;

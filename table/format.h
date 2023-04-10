@@ -107,14 +107,14 @@ class ValueHandle {
   uint32_t offset_{0};
   uint32_t size_{0};
   ValueHandle() = default;
-  ValueHandle(uint32_t table_id, uint32_t block_id, uint32_t offset, uint32_t size)
-      : table_(table_id),
-        block_(block_id),
-        offset_(offset),
-        size_(size)
-  {}
+  ValueHandle(uint32_t table_id, uint32_t block_id, uint32_t offset,
+              uint32_t size)
+      : table_(table_id), block_(block_id), offset_(offset), size_(size) {}
   bool operator==(const ValueHandle& x) const {
-    return std::memcmp(&x, this, sizeof(ValueHandle))==0;
+    return std::memcmp(&x, this, sizeof(ValueHandle)) == 0;
+  }
+  bool operator!=(const ValueHandle& x) const {
+    return std::memcmp(&x, this, sizeof(ValueHandle)) != 0;
   }
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* input);

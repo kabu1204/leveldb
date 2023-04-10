@@ -2154,6 +2154,11 @@ class ModelDB : public DB {
     return batch->Iterate(&handler);
   }
 
+  Status Write(const WriteOptions& options, WriteBatch* batch,
+               WriteCallback* callback) override {
+    return Write(options, batch);
+  }
+
   bool GetProperty(const Slice& property, std::string* value) override {
     return false;
   }

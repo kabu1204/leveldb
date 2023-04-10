@@ -38,8 +38,20 @@ class DivideHandler : public WriteBatch::Handler {
   WriteBatch* small;
 };
 
+// Information kept for every waiting writer
+struct DBWrapper::Writer {
+  explicit Writer(port::Mutex* mu)
+      : batch(nullptr), sync(false), done(false), cv(mu) {}
+
+  Status status;
+  WriteBatch* batch;
+  bool sync;
+  bool done;
+  port::CondVar cv;
+};
+
 Status ValueLogImpl::Open(const Options& options, const std::string& dbname,
-                          DBWrapper* db, ValueLogImpl** vlog) {
+                          DB* db, ValueLogImpl** vlog) {
   assert(db != nullptr);
   if (vlog != nullptr) {
     *vlog = nullptr;
@@ -52,110 +64,35 @@ Status ValueLogImpl::Open(const Options& options, const std::string& dbname,
   return Status::OK();
 }
 
-DBWrapper::~DBWrapper() { delete vlog_; }
-
-Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates) {
-  Writer w(&mutex_);
-  w.batch = updates;
-  w.sync = options.sync;
-  w.done = false;
-
-  MutexLock l(&mutex_);  // mutex_::mu_ is locked
-  writers_.push_back(&w);
-  while (!w.done && &w != writers_.front()) {
-    w.cv.Wait();
-  }
-  if (w.done) {
-    return w.status;
-  }
-
-  // &w == writers_.front() is TRUE
-  // May temporarily unlock and wait.
-  Status status = MakeRoomForWrite(updates == nullptr);
-  uint64_t last_sequence = versions_->LastSequence();
-  Writer* last_writer = &w;
-  if (status.ok() && updates != nullptr) {  // nullptr batch is for compactions
-    WriteBatch* write_batch = BuildBatchGroup(&last_writer);
-    WriteBatch small;
-    ValueBatch large;
-    WriteBatchInternal::SetSequence(write_batch, last_sequence + 1);
-    status = DivideWriteBatch(write_batch, &small, &large);
-    if (!status.ok()) {
-      return status;
-    }
-
-    last_sequence += WriteBatchInternal::Count(write_batch);
-
-    write_batch->Clear();  // write_batch may be tmp_batch_, we need to clear it
-                           // when holding the lock.
-    {
-      mutex_.Unlock();
-      status = vlog_->Write(options, &large);
-
-      /*
-       * large values have been inserted to ValueLog, format the WriteBatch
-       * to the LSMTree.
-       * TODO: can be optimized to reduce memory copy;
-       */
-      if (large.NumEntries() == 0) {
-        write_batch = &small;
-      } else {
-        status = large.ToWriteBatch(write_batch);
-        write_batch->Append(small);
-      }
-      assert(WriteBatchInternal::Sequence(write_batch) + large.NumEntries() ==
-             WriteBatchInternal::Sequence(&small));
-
-      status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
-      bool sync_error = false;
-      if (status.ok() && options.sync) {
-        status = logfile_->Sync();
-        if (!status.ok()) {
-          sync_error = true;
-        }
-      }
-      if (status.ok()) {
-        status = WriteBatchInternal::InsertInto(write_batch, mem_);
-      }
-      mutex_.Lock();
-      if (sync_error) {
-        // The state of the log file is indeterminate: the log record we
-        // just added may or may not show up when the DB is re-opened.
-        // So we force the DB into a mode where all future writes fail.
-        RecordBackgroundError(status);
-      }
-    }
-    //    if (write_batch == tmp_batch_) tmp_batch_->Clear();
-
-    versions_->SetLastSequence(last_sequence);
-  }
-
-  while (true) {
-    Writer* ready = writers_.front();
-    writers_.pop_front();
-    if (ready != &w) {  // TODO: maybe there's no need to notify self?
-      ready->status = status;
-      ready->done = true;
-      ready->cv.Signal();
-    }
-    if (ready == last_writer) break;
-  }
-
-  // Notify new head of write queue
-  if (!writers_.empty()) {
-    writers_.front()->cv.Signal();
-  }
-
-  return status;
+DBWrapper::~DBWrapper() {
+  delete db_;
+  delete vlog_;
 }
 
-SequenceNumber DBWrapper::GetSmallestSnapshot() {
-  MutexLock l(&mutex_);
-  if (snapshots_.empty()) {
-    return versions_->LastSequence();
-  } else {
-    return snapshots_.oldest()->sequence_number();
+Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates) {
+  return Write(options, updates, nullptr);
+}
+
+Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates,
+                        WriteCallback* callback) {
+  // TODO batching the updates;
+  Status s;
+  WriteBatch small;
+  ValueBatch large;
+  s = DivideWriteBatch(updates, &small, &large);
+  if (!s.ok()) {
+    return s;
   }
+
+  {
+    WriteLock l(&rwlock_);
+    s = vlog_->Write(options, &large);
+  }
+  if (s.ok()) {
+    large.ToWriteBatch(&small);
+    s = db_->Write(options, &small, callback);
+  }
+  return s;
 }
 
 Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
@@ -169,29 +106,6 @@ Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
   Status s = input->Iterate(&handler);
   WriteBatchInternal::SetSequence(small, handler.sequence_);
   return s;
-}
-
-Status DBWrapper::WriteLSM(const WriteOptions& options, WriteBatch* batch) {
-  Status status;
-  status = log_->AddRecord(WriteBatchInternal::Contents(batch));
-  bool sync_error = false;
-  if (status.ok() && options.sync) {
-    status = logfile_->Sync();
-    if (!status.ok()) {
-      sync_error = true;
-    }
-  }
-  if (status.ok()) {
-    status = WriteBatchInternal::InsertInto(batch, mem_);
-  }
-  if (sync_error) {
-    // The state of the log file is indeterminate: the log record we
-    // just added may or may not show up when the DB is re-opened.
-    // So we force the DB into a mode where all future writes fail.
-    MutexLock l(&mutex_);
-    RecordBackgroundError(status);
-  }
-  return status;
 }
 
 /*
@@ -212,7 +126,7 @@ Status DBWrapper::WriteLSM(const WriteOptions& options, WriteBatch* batch) {
 Status DBWrapper::Get(const ReadOptions& options, const Slice& key,
                       std::string* value) {
   ValueType valueType;
-  Status status = DBImpl::Get(options, key, value, &valueType);
+  Status status = db_->Get(options, key, value, &valueType);
   if (!status.ok() || valueType != kTypeValueHandle) {
     return status;
   }
@@ -225,9 +139,18 @@ Status DBWrapper::Get(const ReadOptions& options, const Slice& key,
   return status;
 }
 
+Status DBWrapper::Put(const WriteOptions& options, const Slice& key,
+                      const Slice& val) {
+  return DB::Put(options, key, val);
+}
+
+Status DBWrapper::Delete(const WriteOptions& options, const Slice& key) {
+  return DB::Delete(options, key);
+}
+
 std::string DBWrapper::DebugString() {
   std::string result;
-  DBImpl::GetProperty("leveldb.stats", &result);
+  db_->GetProperty("leveldb.stats", &result);
   result += "\n";
   result += vlog_->DebugString();
   return result;
@@ -236,9 +159,9 @@ std::string DBWrapper::DebugString() {
 Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
   SequenceNumber latest_snapshot;
   uint32_t seed;
-  Iterator* iter = NewInternalIterator(options, &latest_snapshot, &seed);
+  Iterator* iter = db_->NewInternalIterator(options, &latest_snapshot, &seed);
   return NewBlobDBIterator(
-      this, vlog_, user_comparator(), iter,
+      db_, vlog_, db_->user_comparator(), iter,
       (options.snapshot != nullptr
            ? static_cast<const SnapshotImpl*>(options.snapshot)
                  ->sequence_number()
@@ -246,60 +169,51 @@ Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
       seed);
 }
 
-Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
-  *dbptr = nullptr;
-  DBImpl* impl;
-  if (!options.blob_db) {
-    impl = new DBImpl(options, dbname);
-  } else {
-    Log(options.info_log,
-        "Creating BlobDB, ValueThreshold = %lu\n\t"
-        "VLogFileSize = %lu\n\t"
-        "VLogMaxEntries = %lu",
-        options.vlog_value_size_threshold, options.max_vlog_file_size,
-        options.max_entries_per_vlog);
-    DBWrapper* dbWrapper = new DBWrapper(options, dbname);
-    ValueLogImpl* vlog;
-    ValueLogImpl::Open(options, dbname, dbWrapper, &vlog);
-    dbWrapper->vlog_ = vlog;
-    impl = dbWrapper;
-  }
-  impl->mutex_.Lock();
-  VersionEdit edit;
-  // Recover handles create_if_missing, error_if_exists
-  bool save_manifest = false;
-  Status s = impl->Recover(&edit, &save_manifest);
-  if (s.ok() && impl->mem_ == nullptr) {
-    // Create new log and a corresponding memtable.
-    uint64_t new_log_number = impl->versions_->NewFileNumber();
-    WritableFile* lfile;
-    s = options.env->NewWritableFile(LogFileName(dbname, new_log_number),
-                                     &lfile);
-    if (s.ok()) {
-      edit.SetLogNumber(new_log_number);
-      impl->logfile_ = lfile;
-      impl->logfile_number_ = new_log_number;
-      impl->log_ = new log::Writer(lfile);
-      impl->mem_ = new MemTable(impl->internal_comparator_);
-      impl->mem_->Ref();
-    }
-  }
-  if (s.ok() && save_manifest) {
-    edit.SetPrevLogNumber(0);  // No older logs needed after recovery.
-    edit.SetLogNumber(impl->logfile_number_);
-    s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
-  }
-  if (s.ok()) {
-    impl->RemoveObsoleteFiles();
-    impl->MaybeScheduleCompaction();
-  }
-  impl->mutex_.Unlock();
+const Snapshot* DBWrapper::GetSnapshot() { return db_->GetSnapshot(); }
 
-  if (s.ok()) {
-    assert(impl->mem_ != nullptr);
-    *dbptr = impl;
-  } else {
-    delete impl;
+void DBWrapper::ReleaseSnapshot(const Snapshot* snapshot) {
+  db_->ReleaseSnapshot(snapshot);
+}
+
+bool DBWrapper::GetProperty(const Slice& property, std::string* value) {
+  return db_->GetProperty(property, value);
+}
+
+void DBWrapper::GetApproximateSizes(const Range* range, int n,
+                                    uint64_t* sizes) {
+  db_->GetApproximateSizes(range, n, sizes);
+}
+
+void DBWrapper::CompactRange(const Slice* begin, const Slice* end) {
+  db_->CompactRange(begin, end);
+}
+
+Status DBWrapper::Open(const Options& options, const std::string& name,
+                       DBWrapper** dbptr) {
+  if (dbptr != nullptr) {
+    *dbptr = nullptr;
+  }
+  Log(options.info_log,
+      "Creating BlobDB, ValueThreshold = %lu\n\t"
+      "VLogFileSize = %lu\n\t"
+      "VLogMaxEntries = %lu",
+      options.vlog_value_size_threshold, options.max_vlog_file_size,
+      options.max_entries_per_vlog);
+  Status s;
+  DB* db;
+  s = DB::Open(options, name, &db);
+  if (!s.ok()) {
+    return s;
+  }
+  ValueLogImpl* vlog;
+  s = ValueLogImpl::Open(options, name, db, &vlog);
+  if (!s.ok()) {
+    delete db;
+    return s;
+  }
+  DBWrapper* dbWrapper = new DBWrapper(options, name, db, vlog);
+  if (dbptr != nullptr) {
+    *dbptr = dbWrapper;
   }
   return s;
 }

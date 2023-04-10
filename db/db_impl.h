@@ -41,6 +41,8 @@ class DBImpl : public DB {
              const Slice& value) override;
   Status Delete(const WriteOptions&, const Slice& key) override;
   Status Write(const WriteOptions& options, WriteBatch* updates) override;
+  Status Write(const WriteOptions& options, WriteBatch* updates,
+               WriteCallback* callback) override;
   Status Get(const ReadOptions& options, const Slice& key,
              std::string* value) override;
   Status Get(const ReadOptions& options, const Slice& key, std::string* value,
@@ -69,6 +71,8 @@ class DBImpl : public DB {
   // file at a level >= 1.
   int64_t TEST_MaxNextLevelOverlappingBytes();
 
+  void TEST_BuildWriterGroup();
+
   // Record a sample of bytes read at the specified internal key.
   // Samples are taken approximately once every config::kReadBytesPeriod
   // bytes.
@@ -76,9 +80,10 @@ class DBImpl : public DB {
 
  protected:
   friend class DB;
-  friend class ValueLogImpl;
+  friend class DBWrapper;
   struct CompactionState;
   struct Writer;
+  struct WriterGroup;
 
   // Information for a manual compaction
   struct ManualCompaction {
@@ -136,8 +141,8 @@ class DBImpl : public DB {
 
   Status MakeRoomForWrite(bool force /* compact even if there is room? */)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-  WriteBatch* BuildBatchGroup(Writer** last_writer)
-      EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+  void BuildWriterGroup(WriterGroup* group) EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   void RecordBackgroundError(const Status& s);
 
@@ -207,18 +212,6 @@ class DBImpl : public DB {
   Status bg_error_ GUARDED_BY(mutex_);
 
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
-};
-
-// Information kept for every waiting writer
-struct DBImpl::Writer {
-  explicit Writer(port::Mutex* mu)
-      : batch(nullptr), sync(false), done(false), cv(mu) {}
-
-  Status status;
-  WriteBatch* batch;
-  bool sync;
-  bool done;
-  port::CondVar cv;
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

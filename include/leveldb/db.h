@@ -11,6 +11,7 @@
 #include "leveldb/export.h"
 #include "leveldb/iterator.h"
 #include "leveldb/options.h"
+#include "leveldb/write_callback.h"
 
 namespace leveldb {
 
@@ -76,6 +77,9 @@ class LEVELDB_EXPORT DB {
   // Returns OK on success, non-OK on failure.
   // Note: consider setting options.sync = true.
   virtual Status Write(const WriteOptions& options, WriteBatch* updates) = 0;
+
+  virtual Status Write(const WriteOptions& options, WriteBatch* updates,
+                       WriteCallback* callback) = 0;
 
   // If the database contains an entry for "key" store the
   // corresponding value in *value and return OK.

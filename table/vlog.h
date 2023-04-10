@@ -5,13 +5,13 @@
 #ifndef LEVELDB_VLOG_H
 #define LEVELDB_VLOG_H
 
-#include "db/value_batch.h"
-
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
 #include "leveldb/options.h"
 
 #include "table/format.h"
+#include "table/value_batch.h"
+#include "table/vlog_iter.h"
 #include "util/coding.h"
 
 namespace leveldb {
@@ -63,7 +63,7 @@ class VLogReader {
 
   ~VLogReader();
 
-  Iterator* NewIterator(const ReadOptions&) const;
+  VLogReaderIterator* NewIterator(const ReadOptions&) const;
 
   /*
    * Iterate through the file, stop when !iter->Valid(),
@@ -76,7 +76,6 @@ class VLogReader {
 
  private:
   friend class VLogCache;
-  class Iter;
   struct Rep;
 
   explicit VLogReader(Rep* rep): rep_(rep) {}
