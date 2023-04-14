@@ -55,9 +55,18 @@ class DBWrapper : public DB {
   Status Get(const ReadOptions& options, const Slice& key,
              std::string* value) override;
 
+  /*
+   * Sync LSM, i.e. sync WAL.
+   */
+  Status SyncLSM();
+
+  void RemoveObsoleteBlob();
+
   Iterator* NewIterator(const ReadOptions& options) override;
 
   std::string DebugString();
+
+  Status ManualGC(uint64_t number);
 
  private:
   friend class DB;
@@ -73,8 +82,6 @@ class DBWrapper : public DB {
 
   Status DivideWriteBatch(WriteBatch* input, WriteBatch* small,
                           ValueBatch* large);
-
-  SequenceNumber GetSmallestSnapshot();
 
   Options options_;
   std::string dbname_;

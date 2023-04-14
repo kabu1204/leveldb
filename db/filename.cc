@@ -44,8 +44,16 @@ std::string VLogFileName(const std::string& dbname, uint64_t number) {
   return MakeFileName(dbname, number, "vlog");  // leveldb value table
 }
 
-std::string VLogHintFileName(const std::string& dbname) {
-  return dbname + "/VLOG.HINT";
+std::string VLogManifestFileName(const std::string& dbname, uint64_t number) {
+  assert(number > 0);
+  char buf[100];
+  std::snprintf(buf, sizeof(buf), "/VLOG-MANIFEST-%06llu",
+                static_cast<unsigned long long>(number));
+  return dbname + buf;
+}
+
+std::string VLogCurrentFileName(const std::string& dbname) {
+  return dbname + "/VLOG-CURRENT";
 }
 
 // starting from leveldb v1.14, the .sst suffix is deprecated, using .ldb suffix
@@ -96,6 +104,9 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
   if (rest == "CURRENT") {
     *number = 0;
     *type = kCurrentFile;
+  } else if (rest == "VLOG-CURRENT") {
+    *number = 0;
+    *type = kVLogCurrentFile;
   } else if (rest == "LOCK") {
     *number = 0;
     *type = kDBLockFile;
@@ -112,6 +123,17 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
       return false;
     }
     *type = kDescriptorFile;
+    *number = num;
+  } else if (rest.starts_with("VLOG-MANIFEST-")) {
+    rest.remove_prefix(strlen("VLOG-MANIFEST-"));
+    uint64_t num;
+    if (!ConsumeDecimalNumber(&rest, &num)) {
+      return false;
+    }
+    if (!rest.empty()) {
+      return false;
+    }
+    *type = kVLogManifestFile;
     *number = num;
   } else {
     // Avoid strtoull() to keep filename format independent of the
@@ -135,6 +157,24 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
     *number = num;
   }
   return true;
+}
+
+Status SetVLogCurrentFile(Env* env, const std::string& dbname,
+                          uint64_t manifest_number) {
+  // Remove leading "dbname/" and add newline to manifest file name
+  std::string manifest = VLogManifestFileName(dbname, manifest_number);
+  Slice contents = manifest;
+  assert(contents.starts_with(dbname + "/"));
+  contents.remove_prefix(dbname.size() + 1);
+  std::string tmp = TempFileName(dbname, manifest_number);
+  Status s = WriteStringToFileSync(env, contents.ToString() + "\n", tmp);
+  if (s.ok()) {
+    s = env->RenameFile(tmp, VLogCurrentFileName(dbname));
+  }
+  if (!s.ok()) {
+    env->RemoveFile(tmp);
+  }
+  return s;
 }
 
 Status SetCurrentFile(Env* env, const std::string& dbname,

@@ -23,6 +23,8 @@ enum FileType {
   kDBLockFile,
   kTableFile,
   kVLogFile,
+  kVLogManifestFile,
+  kVLogCurrentFile,
   kDescriptorFile,
   kCurrentFile,
   kTempFile,
@@ -43,7 +45,9 @@ std::string TableFileName(const std::string& dbname, uint64_t number);
 
 std::string VLogFileName(const std::string& dbname, uint64_t number);
 
-std::string VLogHintFileName(const std::string& dbname);
+std::string VLogManifestFileName(const std::string& dbname, uint64_t number);
+
+std::string VLogCurrentFileName(const std::string& dbname);
 
 // Return the legacy file name for an sstable with the specified number
 // in the db named by "dbname". The result will be prefixed with
@@ -79,6 +83,9 @@ std::string OldInfoLogFileName(const std::string& dbname);
 // filename was successfully parsed, returns true.  Else return false.
 bool ParseFileName(const std::string& filename, uint64_t* number,
                    FileType* type);
+
+Status SetVLogCurrentFile(Env* env, const std::string& dbname,
+                          uint64_t manifest_number);
 
 // Make the CURRENT file point to the descriptor file with the
 // specified number.

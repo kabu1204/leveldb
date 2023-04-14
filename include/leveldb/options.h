@@ -155,6 +155,12 @@ struct LEVELDB_EXPORT Options {
   size_t max_entries_per_vlog = 100000;
 
   size_t vlog_value_size_threshold = 1024;
+
+  // 0-100
+  int blob_gc_size_discard_threshold = 50;
+
+  // 0-100
+  int blob_gc_num_discard_threshold = 50;
 };
 
 // Options that control read operations

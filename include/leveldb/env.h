@@ -303,14 +303,18 @@ class LEVELDB_EXPORT WritableFile {
   virtual Status Sync() = 0;
 };
 
-class LEVELDB_EXPORT AppendableRandomAccessFile: public RandomAccessFile, public WritableFile{
+class LEVELDB_EXPORT AppendableRandomAccessFile : public RandomAccessFile,
+                                                  public WritableFile {
  public:
   AppendableRandomAccessFile() = default;
 
   AppendableRandomAccessFile(const AppendableRandomAccessFile&) = delete;
-  AppendableRandomAccessFile& operator=(const AppendableRandomAccessFile&) = delete;
+  AppendableRandomAccessFile& operator=(const AppendableRandomAccessFile&) =
+      delete;
 
-  virtual ~AppendableRandomAccessFile();
+  ~AppendableRandomAccessFile() override;
+
+  virtual uint64_t Offset() { return 0; }
 };
 
 // An interface for writing log messages.

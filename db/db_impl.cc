@@ -289,7 +289,11 @@ void DBImpl::RemoveObsoleteFiles() {
           // be recorded in pending_outputs_, which is inserted into "live"
           keep = (live.find(number) != live.end());
           break;
+        case kVLogManifestFile:
         case kVLogFile:
+        case kVLogCurrentFile:
+          // just keep, we will handle ValueLog relates files separately in
+          // ValueLog
         case kCurrentFile:
         case kDBLockFile:
         case kInfoLogFile:
@@ -1444,6 +1448,20 @@ void DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
   snapshots_.Delete(static_cast<const SnapshotImpl*>(snapshot));
 }
 
+SequenceNumber DBImpl::LatestSequence() {
+  MutexLock l(&mutex_);
+  return versions_->LastSequence();
+}
+
+SequenceNumber DBImpl::SmallestSequence() {
+  MutexLock l(&mutex_);
+  if (snapshots_.empty()) {
+    return versions_->LastSequence();
+  } else {
+    return snapshots_.oldest()->sequence_number();
+  }
+}
+
 // Convenience methods
 Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
   return DB::Put(o, key, val);
@@ -1451,6 +1469,11 @@ Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
 
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
+}
+
+Status DBImpl::Sync() {
+  MutexLock l(&mutex_);
+  return logfile_->Sync();
 }
 
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
@@ -1491,24 +1514,27 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates,
 
     for (cur_leader = writer_group.first_leader; cur_leader != nullptr;
          cur_leader = cur_leader->next) {
+      mutex_.Unlock();
       write_batch = cur_leader->batch;
 
       if (cur_leader->callback != nullptr &&
           !cur_leader->callback->Callback(this).ok()) {
+        mutex_.Lock();
         goto NOTIFY;
       }
 
       if (write_batch == nullptr) {
+        mutex_.Lock();
         goto NOTIFY;
       }
 
       WriteBatchInternal::SetSequence(write_batch, last_sequence + 1);
       last_sequence += WriteBatchInternal::Count(write_batch);
       {
-        mutex_.Unlock();
         status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
         bool sync_error = false;
         if (status.ok() && options.sync) {
+          // TODO: we may sync logfile many times within a sync WriteGroup
           status = logfile_->Sync();
           if (!status.ok()) {
             sync_error = true;
@@ -1517,6 +1543,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates,
         if (status.ok()) {
           status = WriteBatchInternal::InsertInto(write_batch, mem_);
         }
+
         mutex_.Lock();
         if (sync_error) {
           // The state of the log file is indeterminate: the log record we

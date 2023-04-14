@@ -218,4 +218,13 @@ Status DBWrapper::Open(const Options& options, const std::string& name,
   return s;
 }
 
+Status DBWrapper::ManualGC(uint64_t number) { return vlog_->ManualGC(number); }
+
+Status DBWrapper::SyncLSM() { return db_->Sync(); }
+
+void DBWrapper::RemoveObsoleteBlob() {
+  WriteLock l(&vlog_->rwlock_);
+  vlog_->RemoveObsoleteFiles();
+}
+
 }  // namespace leveldb

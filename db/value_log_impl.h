@@ -8,6 +8,7 @@
 #include "db/db_impl.h"
 #include "db/db_wrapper.h"
 #include "db/log_writer.h"
+#include "db/value_log_version.h"
 #include "db/value_table_cache.h"
 #include <deque>
 #include <map>
@@ -25,22 +26,16 @@
 
 namespace leveldb {
 
-struct VLogFileMeta {
-  VLogFileMeta() {}
-
-  int refs{0};
-  uint64_t number;
-  uint64_t file_size{0};
-};
-
 class VLogRWFile {
  public:
   VLogRWFile(const Options& options, AppendableRandomAccessFile* f,
-             bool reuse = false, uint32_t offset = 0, uint32_t num_entries = 0)
+             uint64_t number, bool reuse = false, uint32_t offset = 0,
+             uint32_t num_entries = 0)
       : file_(f),
         builder_(nullptr),
         reader_(nullptr),
         closed_(false),
+        number_(number),
         refs_(0) {
     if (file_ != nullptr) {
       builder_ = new VLogBuilder(options, file_, reuse, offset, num_entries);
@@ -118,6 +113,7 @@ class VLogRWFile {
 
   uint32_t Offset() const { return builder_->Offset(); }
   uint32_t FileSize() const { return builder_->FileSize(); }
+  uint64_t FileNumber() const { return number_; }
 
  private:
   ~VLogRWFile() {
@@ -136,12 +132,16 @@ class VLogRWFile {
   bool closed_;
 
   Status status_;
+  uint64_t number_;
 
   AppendableRandomAccessFile* const
       file_;              // the file that currently being built
   VLogBuilder* builder_;  // associated with rw_file_
   VLogReader* reader_;    // associated with rw_file_
 };
+
+class ValueLogGCWriteCallback;
+struct GarbageCollection;
 
 /*
  * thread-safe for 1 Add() and N Get()
@@ -175,30 +175,41 @@ class ValueLogImpl {
 
   std::string DebugString();
 
-  Status DoGC(uint64_t number);
+  GarbageCollection* PickGC(uint64_t number);
+
+  Status Collect(GarbageCollection* gc) SHARED_LOCKS_REQUIRED(rwlock_);
+
+  Status Rewrite(GarbageCollection* gc);
+
+  Status ManualGC(uint64_t number);
+
+  void RemoveObsoleteFiles() EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
 
  private:
-  friend class ValueLog;
+  friend class DBWrapper;
 
   explicit ValueLogImpl(const Options& options, const std::string& dbname,
                         DB* db);
 
-  uint64_t NewFileNumber() { return ++vlog_file_number_; }
-
-  uint64_t CurrentFileNumber() const { return vlog_file_number_; }
-  void ReuseFileNumber(uint64_t number) {
-    if (number == CurrentFileNumber() + 1) {
-      vlog_file_number_ = number;
-    }
+  uint64_t NewFileNumber() EXCLUSIVE_LOCKS_REQUIRED(rwlock_) {
+    return ++vlog_file_number_;
   }
 
-  Status FinishBuild();
+  uint64_t CurrentFileNumber() const { return vlog_file_number_; }
 
-  Status NewVLogBuilder();
+  Status FinishBuild() EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
+
+  Status NewVLogBuilder() EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
 
   Iterator* NewVLogFileIterator(const ReadOptions& options, uint64_t number);
 
-  uint64_t PickGC();
+  Status WriteSnapshot(log::Writer* log) EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
+
+  Status LogAndApply(BlobVersionEdit* edit) EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
+
+  Status CheckBlobDBExistence();
+
+  Status NewBlobDB();
 
   struct ByFileNumber {
     bool operator()(VLogFileMeta* lhs, VLogFileMeta* rhs) const {
@@ -210,27 +221,32 @@ class ValueLogImpl {
   const std::string dbname_;
   Options options_;
   Env* const env_;
-  DB* const db_;
+  DBImpl* const db_;  // LSM
+  uint64_t vlog_file_number_{0};
+  uint64_t manifest_number_{0};
+  std::atomic<bool> shutdown_;
+
+  /*
+   * MANIFEST
+   */
+  WritableFile* manifest_file_;
+  log::Writer* manifest_log_;
 
   /*
    * Read & Write VLOG
    */
   VLogRWFile* rwfile_;
-  std::map<uint64_t, VLogFileMeta*> ro_files_
+  std::map<uint64_t, VLogFileMeta> ro_files_
       GUARDED_BY(rwlock_);  // read-only vlog files
-  uint64_t vlog_file_number_{0};
+
   VLogCache* const vlog_cache_{nullptr};
-  std::unordered_map<uint64_t, port::RWSpinLock*> lock_table_
-      GUARDED_BY(rwlock_);
-  char buf_[256];
 
   /*
    * Garbage collection
    */
-  uint64_t gc_ptr_;
-  WritableFile* hintfile_;
-  log::Writer* hint_;
-  std::atomic<bool> shutdown_;
+  std::set<uint64_t> pending_outputs_;  // GC thread is writing to these files
+  std::map<uint64_t, SequenceNumber>
+      obsolete_files_;  // <file_number, sequence>
 };
 
 }  // namespace leveldb

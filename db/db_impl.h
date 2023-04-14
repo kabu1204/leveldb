@@ -47,9 +47,12 @@ class DBImpl : public DB {
              std::string* value) override;
   Status Get(const ReadOptions& options, const Slice& key, std::string* value,
              ValueType* valueType);
+  Status Sync();
   Iterator* NewIterator(const ReadOptions&) override;
   const Snapshot* GetSnapshot() override;
   void ReleaseSnapshot(const Snapshot* snapshot) override;
+  SequenceNumber LatestSequence();
+  SequenceNumber SmallestSequence();
   bool GetProperty(const Slice& property, std::string* value) override;
   void GetApproximateSizes(const Range* range, int n, uint64_t* sizes) override;
   void CompactRange(const Slice* begin, const Slice* end) override;

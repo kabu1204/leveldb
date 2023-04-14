@@ -150,6 +150,7 @@ class StringSinkSource: public AppendableRandomAccessFile {
     return Status::OK();
   }
   uint64_t Size() const { return contents_.size(); }
+  uint64_t Offset() override { return Size(); }
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {

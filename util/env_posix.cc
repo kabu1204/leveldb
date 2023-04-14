@@ -572,9 +572,7 @@ class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
     return status_;
   }
 
-  uint64_t Offset() {
-    return len_.load();
-  }
+  uint64_t Offset() override { return len_.load(); }
 
  private:
   Status ExtendMmapSize(size_t need) {
