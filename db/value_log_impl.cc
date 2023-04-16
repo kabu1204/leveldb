@@ -58,8 +58,28 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
   if (handle.table_ == 0 || handle.table_ > CurrentFileNumber()) {
     return Status::InvalidArgument("invalid value log number");
   }
+
+  VLogRWFile* rwfile = rwfile_;
+  if (rwfile) rwfile->Ref();
+
+  Status s = GetLocked(options, rwfile, handle, value);
+
+  if (rwfile) rwfile->Unref();
+  return Status::OK();
+}
+
+/*
+ * TODO: consider using NewVLogFileIterator to make code cleaner
+ */
+Status ValueLogImpl::GetLocked(const ReadOptions& options, VLogRWFile* rwfile,
+                               const ValueHandle& handle, std::string* value) {
+  rwlock_.AssertRLockHeld();
   Iterator* iter;
-  if (handle.table_ != rwfile_->FileNumber()) {
+
+  if (!rwfile || handle.table_ != rwfile->FileNumber()) {
+    /*
+     * Get from read only files
+     */
     auto it = ro_files_.find(handle.table_);
     if (it != ro_files_.end()) {
       if (handle.offset_ >= it->second.file_size) {
@@ -71,13 +91,17 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
       return Status::InvalidArgument("value log number not exists");
     }
   } else {
-    if (handle.offset_ >= rwfile_->Offset()) {
+    /*
+     * Get from rwfile
+     */
+    if (handle.offset_ >= rwfile->Offset()) {
       Log(options_.info_log, "value log offset %u is out of limit %u",
-          handle.offset_, rwfile_->Offset());
+          handle.offset_, rwfile->Offset());
       return Status::InvalidArgument("value log offset is out of limit");
     }
-    iter = rwfile_->NewIterator(options);
+    iter = rwfile->NewIterator(options);
   }
+
   {
     // unlock when reading from disk
     rwlock_.RUnlock();
@@ -90,11 +114,13 @@ Status ValueLogImpl::Get(const ReadOptions& options, const ValueHandle& handle,
     } else {
       Status s = Status::NotFound("value not found", iter->status().ToString());
       delete iter;
+      rwlock_.RLock();
       return s;
     }
     delete iter;
     rwlock_.RLock();
   }
+
   return Status::OK();
 }
 
@@ -342,13 +368,23 @@ ValueLogImpl::~ValueLogImpl() {
 Status ValueLogImpl::FinishBuild() {
   rwlock_.AssertWLockHeld();
   BlobVersionEdit edit;
+  VLogFileMeta f;
 
   rwfile_->Finish();
+
+  /*
+   * We add rwfile to ro_files in advance
+   */
+  f.number = rwfile_->FileNumber();
+  f.file_size = rwfile_->FileSize();
+  ro_files_.emplace(f.number, f);
+
   edit.AddFile(rwfile_->FileNumber(), rwfile_->FileSize());
+  edit.NewRWFile(NewFileNumber());
+
   rwfile_->Unref();
   rwfile_ = nullptr;
 
-  edit.NewRWFile(NewFileNumber());
   return LogAndApply(&edit);
 }
 
@@ -421,7 +457,9 @@ Status ValueLogImpl::LogAndApply(BlobVersionEdit* edit) {
   }
 
   for (auto f : edit->new_files_) {
-    assert(ro_files_.count(f.number) == 0);
+    if (ro_files_.count(f.number) != 0) {
+      assert(f.file_size == ro_files_[f.number].file_size);
+    }
     assert(f.number <= CurrentFileNumber());
     ro_files_.emplace(f.number, f);
   }

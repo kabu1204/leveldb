@@ -188,6 +188,10 @@ class ValueLogImpl {
  private:
   friend class DBWrapper;
 
+  Status GetLocked(const ReadOptions& options, VLogRWFile* rwfile,
+                   const ValueHandle& handle, std::string* value)
+      SHARED_LOCKS_REQUIRED(rwlock_);
+
   explicit ValueLogImpl(const Options& options, const std::string& dbname,
                         DB* db);
 

@@ -508,13 +508,11 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
   options.create_if_missing = true;
   options.max_vlog_file_size = 8 << 20;
   std::string dbname("testdb");
-  DB* db;
-  DB::Open(options, dbname, &db);
-  DBWrapper* dbwrapper = reinterpret_cast<DBWrapper*>(0x1234);
-  ValueLogImpl* v;
-  ValueLogImpl::Open(options, dbname, dbwrapper, &v);
+
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
   std::atomic<SequenceNumber> seq{1};
-  std::deque<std::pair<ValueHandle, std::string>> kvq;
+  std::deque<std::pair<std::string, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);
   uint32_t total_entries = 8 * 10000;
@@ -531,16 +529,15 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
 
   for (int i = 0; i < n_writers; i++) {
     wth[i] = new std::thread(
-        [&lk, &kvq, &v, &cv, &seq, per_writer](int k) {
-          ValueHandle handle_;
+        [&lk, &kvq, db, &cv, &seq, per_writer](int k) {
           for (int j = k * per_writer; j < (k + 1) * per_writer; ++j) {
             std::string key("k0" + std::to_string(j));
             std::string val("value0" + std::to_string(j) +
                             std::string(1024, 'x'));
-            auto s = v->Put(WriteOptions(), key, val, seq++, &handle_);
+            auto s = db->Put(WriteOptions(), key, val);
             ASSERT_TRUE(s.ok());
             lk.Lock();
-            kvq.emplace_back(handle_, val);
+            kvq.emplace_back(key, val);
             lk.Unlock();
             cv.SignalAll();
           }
@@ -551,8 +548,8 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
 
   for (int i = 0; i < n_readers; i++) {
     rth[i] = new std::thread(
-        [&lk, &kvq, &v, &cv, per_reader](int k) {
-          ValueHandle handle_;
+        [&lk, &kvq, db, &cv, per_reader](int k) {
+          std::string key;
           std::string val;
           std::string expected;
           for (int j = k * per_reader; j < (k + 1) * per_reader; ++j) {
@@ -560,11 +557,11 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
             while (kvq.empty()) {
               cv.Wait();
             }
-            handle_ = kvq.front().first;
+            key = kvq.front().first;
             expected = kvq.front().second;
             kvq.pop_front();
             lk.Unlock();
-            auto s = v->Get(ReadOptions(), handle_, &val);
+            auto s = db->Get(ReadOptions(), key, &val);
             ASSERT_TRUE(s.ok());
             ASSERT_EQ(val, expected);
           }
@@ -582,9 +579,8 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
     delete rth[i];
   }
 
-  printf("%s", v->DebugString().c_str());
+  printf("%s", db->DebugString().c_str());
 
-  delete v;
   delete db;
   delete[] wth;
   delete[] rth;
