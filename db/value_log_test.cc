@@ -12,6 +12,7 @@
 #include "leveldb/env.h"
 
 #include "table/format.h"
+#include "util/sync_point.h"
 
 #include "gtest/gtest.h"
 
@@ -42,6 +43,214 @@ uint64_t SizeOf(const Slice& key, const Slice& val) {
          sizeof(uint64_t);
 }
 
+TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  options.blob_db = true;
+  options.vlog_value_size_threshold = 256;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+  int num_entries = 100000;
+
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
+
+  std::unordered_map<std::string, std::string> kvmap;
+  std::vector<std::string> rewrites;
+
+  auto validate_fn = [&db, &kvmap, &value]() {
+    Status s;
+    for (const auto& p : kvmap) {
+      std::string key = p.first;
+      s = db->Get(ReadOptions(), key, &value);
+      ASSERT_TRUE(s.ok());
+      ASSERT_EQ(kvmap[key], value);
+    }
+  };
+
+  size_t size = 0;
+  for (int i = 0; i < num_entries; ++i) {
+    std::string key = "key" + std::to_string(i);
+    std::string val = "value" + std::string(256, 'x');
+    kvmap[key] = val;
+    if (size <= options.max_vlog_file_size) {
+      rewrites.emplace_back(key);
+      size += SizeOf(key, val);
+    }
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+  }
+
+  std::random_device rd;
+  std::mt19937 g(rd());
+  std::shuffle(rewrites.begin(), rewrites.end(), g);
+
+  int d = 0;
+  for (auto& key : rewrites) {
+    std::string val = "NEWvalue" + std::string(256, 'x');
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+
+    kvmap[key] = val;
+    d++;
+    if (d > rewrites.size() / 2 + 1) {
+      break;
+    }
+  }
+
+  struct sync_point_arg {
+    DBWrapper* db;
+    std::unordered_map<std::string, std::string>* kvs;
+  };
+  sync_point_arg myarg = {.db = db, .kvs = &kvmap};
+  auto sync_point_cb = +[](void* arg) {
+    DBWrapper* db = reinterpret_cast<sync_point_arg*>(arg)->db;
+    auto* kvmap = reinterpret_cast<sync_point_arg*>(arg)->kvs;
+    std::string value;
+    Status s;
+    for (const auto& p : *kvmap) {
+      std::string key = p.first;
+      s = db->Get(ReadOptions(), key, &value);
+      assert(s.ok());
+      assert((*kvmap)[key] == value);
+    }
+    return true;
+  };
+
+  TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterValueRewrite");
+  TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterLSMRewrite");
+
+  TEST_SYNC_POINT_ARG("GC.Rewrite.AfterLSMRewrite", &myarg);
+  TEST_SYNC_POINT_CALLBACK("GC.Rewrite.AfterLSMRewrite", sync_point_cb);
+
+  s = db->ManualGC(0);  // discard ratio ~50%
+  ASSERT_TRUE(s.ok());
+
+  delete db;
+  DBWrapper::Open(options, dbname, &db);
+
+  // Put one more record to expire the old vlog file
+  db->Put(WriteOptions(), "OneMoreKey", "value");
+  db->RemoveObsoleteBlob();
+
+  delete db;
+  DBWrapper::Open(options, dbname, &db);
+
+  validate_fn();
+
+  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  delete db;
+  CleanDir(options.env, dbname);
+}
+
+TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  options.blob_db = true;
+  options.vlog_value_size_threshold = 256;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+  int num_entries = 100000;
+
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
+
+  std::unordered_map<std::string, std::string> kvmap;
+  std::vector<std::string> rewrites;
+
+  auto validate_fn = [&db, &kvmap, &value]() {
+    Status s;
+    for (const auto& p : kvmap) {
+      std::string key = p.first;
+      s = db->Get(ReadOptions(), key, &value);
+      ASSERT_TRUE(s.ok());
+      ASSERT_EQ(kvmap[key], value);
+    }
+  };
+
+  size_t size = 0;
+  for (int i = 0; i < num_entries; ++i) {
+    std::string key = "key" + std::to_string(i);
+    std::string val = "value" + std::string(256, 'x');
+    kvmap[key] = val;
+    if (size <= options.max_vlog_file_size) {
+      rewrites.emplace_back(key);
+      size += SizeOf(key, val);
+    }
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+  }
+
+  std::random_device rd;
+  std::mt19937 g(rd());
+  std::shuffle(rewrites.begin(), rewrites.end(), g);
+
+  int d = 0;
+  for (auto& key : rewrites) {
+    std::string val = "NEWvalue" + std::string(256, 'x');
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+
+    kvmap[key] = val;
+    d++;
+    if (d > rewrites.size() / 2 + 1) {
+      break;
+    }
+  }
+
+  struct sync_point_arg {
+    DBWrapper* db;
+    std::unordered_map<std::string, std::string>* kvs;
+  };
+  sync_point_arg myarg = {.db = db, .kvs = &kvmap};
+  auto sync_point_cb = +[](void* arg) {
+    DBWrapper* db = reinterpret_cast<sync_point_arg*>(arg)->db;
+    auto* kvmap = reinterpret_cast<sync_point_arg*>(arg)->kvs;
+    std::string value;
+    Status s;
+    for (const auto& p : *kvmap) {
+      std::string key = p.first;
+      s = db->Get(ReadOptions(), key, &value);
+      assert(s.ok());
+      assert((*kvmap)[key] == value);
+    }
+    return true;
+  };
+
+  TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterValueRewrite");
+  TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterLSMRewrite");
+
+  TEST_SYNC_POINT_ARG("GC.Rewrite.AfterValueRewrite", &myarg);
+  TEST_SYNC_POINT_CALLBACK("GC.Rewrite.AfterValueRewrite", sync_point_cb);
+
+  s = db->ManualGC(0);  // discard ratio ~50%
+  ASSERT_TRUE(s.ok());
+
+  delete db;
+  DBWrapper::Open(options, dbname, &db);
+
+  // Put one more record to expire the old vlog file
+  db->Put(WriteOptions(), "OneMoreKey", "value");
+  db->RemoveObsoleteBlob();
+
+  delete db;
+  DBWrapper::Open(options, dbname, &db);
+
+  validate_fn();
+
+  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  delete db;
+  CleanDir(options.env, dbname);
+}
+
 TEST(VLOG_TEST, DBWrapperManualGC) {
   Options options;
   Status s;
@@ -59,7 +268,17 @@ TEST(VLOG_TEST, DBWrapperManualGC) {
   DBWrapper::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
-  std::unordered_map<std::string, std::string> first_vlog_kvmap;
+  std::vector<std::string> rewrites;
+
+  auto validate_fn = [&db, &kvmap, &value]() {
+    Status s;
+    for (const auto& p : kvmap) {
+      std::string key = p.first;
+      s = db->Get(ReadOptions(), key, &value);
+      ASSERT_TRUE(s.ok());
+      ASSERT_EQ(kvmap[key], value);
+    }
+  };
 
   size_t size = 0;
   for (int i = 0; i < num_entries; ++i) {
@@ -67,7 +286,7 @@ TEST(VLOG_TEST, DBWrapperManualGC) {
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
     if (size <= options.max_vlog_file_size) {
-      first_vlog_kvmap.emplace(key, val);
+      rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
     s = db->Put(WriteOptions(), key, val);
@@ -77,18 +296,47 @@ TEST(VLOG_TEST, DBWrapperManualGC) {
   s = db->ManualGC(0);  // discard ratio 0%
   ASSERT_TRUE(s.IsInvalidArgument());
 
+  std::random_device rd;
+  std::mt19937 g(rd());
+  std::shuffle(rewrites.begin(), rewrites.end(), g);
+
   int d = 0;
-  for (const auto& p : first_vlog_kvmap) {
-    std::string key = p.first;
+  for (auto& key : rewrites) {
     std::string val = "NEWvalue" + std::string(256, 'x');
     s = db->Put(WriteOptions(), key, val);
     ASSERT_TRUE(s.ok());
 
+    kvmap[key] = val;
     d++;
-    if (d > first_vlog_kvmap.size() / 2 + 1) {
+    if (d > rewrites.size() / 2 + 1) {
       break;
     }
   }
+
+  struct sync_point_arg {
+    DBWrapper* db;
+    std::unordered_map<std::string, std::string>* kvs;
+  };
+  sync_point_arg myarg = {.db = db, .kvs = &kvmap};
+  auto sync_point_cb = +[](void* arg) {
+    DBWrapper* db = reinterpret_cast<sync_point_arg*>(arg)->db;
+    auto* kvmap = reinterpret_cast<sync_point_arg*>(arg)->kvs;
+    std::string value;
+    Status s;
+    for (const auto& p : *kvmap) {
+      std::string key = p.first;
+      s = db->Get(ReadOptions(), key, &value);
+      assert(s.ok());
+      assert((*kvmap)[key] == value);
+    }
+    return false;
+  };
+
+  TEST_SYNC_POINT_ARG("GC.Rewrite.AfterValueRewrite", &myarg);
+  TEST_SYNC_POINT_CALLBACK("GC.Rewrite.AfterValueRewrite", sync_point_cb);
+
+  TEST_SYNC_POINT_ARG("GC.Rewrite.AfterLSMRewrite", &myarg);
+  TEST_SYNC_POINT_CALLBACK("GC.Rewrite.AfterLSMRewrite", sync_point_cb);
 
   s = db->ManualGC(0);  // discard ratio ~50%
   ASSERT_TRUE(s.ok());
@@ -96,25 +344,14 @@ TEST(VLOG_TEST, DBWrapperManualGC) {
   delete db;
   DBWrapper::Open(options, dbname, &db);
 
+  // Put one more record to expire the old vlog file
   db->Put(WriteOptions(), "OneMoreKey", "value");
   db->RemoveObsoleteBlob();
 
   delete db;
   DBWrapper::Open(options, dbname, &db);
 
-  d = 0;
-  for (const auto& p : first_vlog_kvmap) {
-    std::string key = p.first;
-    std::string val = "NEWvalue" + std::string(256, 'x');
-    s = db->Get(ReadOptions(), key, &value);
-    ASSERT_TRUE(s.ok());
-    ASSERT_EQ(val, value);
-
-    d++;
-    if (d > first_vlog_kvmap.size() / 2 + 1) {
-      break;
-    }
-  }
+  validate_fn();
 
   printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
   delete db;
@@ -515,8 +752,8 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
   std::deque<std::pair<std::string, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);
-  uint32_t total_entries = 8 * 10000;
-  int n_writers = 1;  // single-producer
+  uint32_t total_entries = 8 * 20000;
+  int n_writers = 8;  // single-producer
   int n_readers = 8;  // multi-consumer
 
   total_entries = n_writers * (total_entries / n_writers);

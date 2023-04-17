@@ -199,6 +199,12 @@ class ValueLogImpl {
     return ++vlog_file_number_;
   }
 
+  void MarkFileNumberUsed(uint64_t number) EXCLUSIVE_LOCKS_REQUIRED(rwlock_) {
+    if (number > CurrentFileNumber()) {
+      vlog_file_number_ = number;
+    }
+  }
+
   uint64_t CurrentFileNumber() const { return vlog_file_number_; }
 
   Status FinishBuild() EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
@@ -210,6 +216,9 @@ class ValueLogImpl {
   Status WriteSnapshot(log::Writer* log) EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
 
   Status LogAndApply(BlobVersionEdit* edit) EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
+
+  Status ValidateAndTruncate(uint64_t number, uint64_t* offset,
+                             uint64_t* num_entries, uint64_t* file_size);
 
   Status CheckBlobDBExistence();
 
@@ -225,8 +234,8 @@ class ValueLogImpl {
   const std::string dbname_;
   Options options_;
   Env* const env_;
-  DBImpl* const db_;  // LSM
-  uint64_t vlog_file_number_{0};
+  DBImpl* const db_;              // LSM
+  uint64_t vlog_file_number_{0};  // current maximum file number
   uint64_t manifest_number_{0};
   std::atomic<bool> shutdown_;
 

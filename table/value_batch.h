@@ -19,6 +19,13 @@ class ValueLogImpl;
 
 class ValueBatch {
  public:
+  class Handler {
+   public:
+    virtual ~Handler() = default;
+    virtual void operator()(const Slice& key, const Slice& value,
+                            ValueHandle handle) = 0;
+  };
+
   ValueBatch() : closed(false), num_entries(0) {}
 
   ~ValueBatch() = default;
@@ -29,6 +36,10 @@ class ValueBatch {
   void Put(SequenceNumber seq, const Slice& key, const Slice& value);
 
   Status ToWriteBatch(WriteBatch* batch);
+
+  const std::vector<ValueHandle>& Handles() const { return handles_; }
+
+  Status Iterate(Handler* handler);
 
   uint32_t NumEntries() const { return num_entries; }
 

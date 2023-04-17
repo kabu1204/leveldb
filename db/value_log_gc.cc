@@ -3,11 +3,14 @@
 //
 
 #include "db/db_wrapper.h"
+#include "db/filename.h"
 #include "db/value_log_impl.h"
 #include "db/value_log_version.h"
 #include "db/write_batch_internal.h"
 
 #include "leveldb/status.h"
+
+#include "util/sync_point.h"
 
 namespace leveldb {
 
@@ -37,7 +40,11 @@ class ValueLogGCWriteCallback : public WriteCallback {
 
   bool AllowGrouping() const override { return false; }
 
+  Slice key() const { return {key_}; }
+
  private:
+  friend class ValueLogImpl;
+
   std::string key_;
   ValueHandle handle_;
 };
@@ -163,8 +170,6 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
       vb.Put(seq, key, iter->value());
       rewrites.emplace_back(WriteBatch(),
                             ValueLogGCWriteCallback(key.ToString(), handle));
-      WriteBatch& wb = rewrites.back().first;
-      WriteBatchInternal::Put(&wb, key, handle_encoding, kTypeValueHandle);
     } else {
       s = Status::Corruption("[GC] failed to decode vlog internal key", ikey);
       break;
@@ -177,6 +182,15 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
 
 /*
  * Rewrite will write to ValueLog, it needs external synchronization.
+ *
+ * Crash consistency:
+ *  1. Crash happens before LSM rewrite:
+ *      This leaves an untracked .vlog file, it will be marked deleted by GC
+ * later.
+ *  2. Crash happens before apply BlobVersionEdit:
+ *       This also leaves an untracked .vlog file, but the LSM contains
+ * ValueHandles pointing to this file. When recovering, we validate and add the
+ * untracked file to ro_files.
  */
 Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
   Status s;
@@ -193,7 +207,28 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
       (gc->discard_entries * 100 / gc->total_entries) <
           options_.blob_gc_num_discard_threshold) {
     return Status::InvalidArgument(
-        "Discarded entries/size does not reach threshold");
+        "Discarded entries/size does not reach the threshold");
+  }
+
+  /*
+   * we create another file instead of directly writing to rwfile_
+   */
+  AppendableRandomAccessFile* file;
+  VLogBuilder* builder;
+  uint64_t number;
+  {
+    WriteLock l(&rwlock_);
+    number = NewFileNumber();
+    s = env_->NewAppendableRandomAccessFile(VLogFileName(dbname_, number),
+                                            &file);
+    if (!s.ok()) {
+      return s;
+    }
+    builder = new VLogBuilder(options_, file, false);
+    pending_outputs_.emplace(number);
+
+    Log(options_.info_log, "[GC #%llu] Rewriting to vlog#%llu", gc->number,
+        number);
   }
 
   /*
@@ -204,15 +239,41 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
   opt.sync = true;
 
   // 1. write to ValueLog
-  s = Write(opt, &gc->value_batch);
-  if (!s.ok()) {
-    return Status::IOError("failed to write to ValueLog", s.ToString());
-  }
+  gc->value_batch.Finalize(number, 0);
+  builder->AddBatch(&gc->value_batch);
+  file->Sync();
+  builder->Finish();
+  file->Close();
 
-  // 2. write to LSM
-  // we disable sync when Writing, and manually sync LSM later
+  // add file to ro_files in advance
+  VLogFileMeta f;
+  f.number = number;
+  f.file_size = builder->FileSize();
+  {
+    rwlock_.WLock();
+    ro_files_.emplace(number, f);
+    rwlock_.WUnlock();
+  }
+  delete builder;
+  delete file;
+
+  TEST_SYNC_POINT_MAY_RETURN("GC.Rewrite.AfterValueRewrite", s);
+
+  // 2. rewrite to LSM
+  // we disable sync when writing, and manually sync LSM later
+  Log(options_.info_log, "[GC #%llu] Rewriting to LSM, vlog#%llu", gc->number,
+      number);
   opt.sync = false;
-  for (auto& p : gc->rewrites) {
+  int i = 0;
+  std::string handle_encoding;
+  const std::vector<ValueHandle>& handles = gc->value_batch.Handles();
+  for (auto& p : gc->rewrites) {  // <WriteBatch, ValueLogGCWriteCallback>
+    // set rewrite value handles
+    handles[i++].EncodeTo(&handle_encoding);
+    WriteBatchInternal::Put(&p.first, p.second.key(), handle_encoding,
+                            kTypeValueHandle);
+
+    // write to LSM
     s = db_->Write(opt, &p.first, &p.second);
     if (!s.ok()) {
       return Status::IOError("failed to write to LSM", s.ToString());
@@ -223,15 +284,18 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
     return s;
   }
 
+  TEST_SYNC_POINT_MAY_RETURN("GC.Rewrite.AfterLSMRewrite", s);
+
   // 3. mark old file as obsolete
   gc->obsolete_sequence = db_->LatestSequence();
   BlobVersionEdit edit;
+  edit.AddFile(f.number, f.file_size);
   edit.DeleteFile(gc->number, gc->obsolete_sequence);
   rwlock_.WLock();
-  LogAndApply(&edit);  // we mark the file as obsolete here, it will be removed
-                       // from disk at proper time
+  s = LogAndApply(&edit);  // we mark the file as obsolete here, it will be
+                           // removed from disk at proper time.
   rwlock_.WUnlock();
-  return Status::OK();
+  return s;
 }
 
 }  // namespace leveldb

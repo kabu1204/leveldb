@@ -215,12 +215,6 @@ Status ValueLogImpl::Recover() {
         "ValueLog");
   }
 
-  /*
-   * Allocate manifest file number.
-   * For simplicity, we do not reuse MANIFEST file
-   */
-  manifest_number_ = NewFileNumber();
-
   // scan over all the .vlog files
   env_->GetChildren(dbname_, &fnames);
   std::set<uint64_t> found_files;
@@ -228,9 +222,24 @@ Status ValueLogImpl::Recover() {
     if (ParseFileName(filename, &number, &type) && type == kVLogFile) {
       if (ro_files_.count(number) == 0 && latest_rw_file != number) {
         /*
-         * This may happen in case of database crash during GC rewriting
+         * This may happen in case of database crash during GC rewriting.
+         * We add the file to the ro_files.
          */
         Log(options_.info_log, "Untracked vlog file: %s", filename.c_str());
+        uint64_t offset, num_entries, file_size;
+        s = ValidateAndTruncate(number, &offset, &num_entries, &file_size);
+        if (s.ok()) {
+          Log(options_.info_log, "Adding untracked vlog file %s to ro_files",
+              filename.c_str());
+
+          VLogFileMeta f;
+          f.number = number;
+          f.file_size = offset;
+
+          ro_files_.emplace(number, f);
+          found_files.emplace(number);
+          MarkFileNumberUsed(number);
+        }
         continue;
       }
 
@@ -248,6 +257,12 @@ Status ValueLogImpl::Recover() {
               : "no");
     }
   }
+
+  /*
+   * Allocate manifest file number.
+   * For simplicity, we do not reuse MANIFEST file
+   */
+  manifest_number_ = NewFileNumber();
 
   // check already deleted files and lost files
   for (auto it = ro_files_.begin(); it != ro_files_.end();) {
@@ -277,35 +292,9 @@ Status ValueLogImpl::Recover() {
   uint64_t offset = 0, num_entries = 0, file_size = 0;
   bool reuse = false;
   AppendableRandomAccessFile* file;
-  VLogReader* reader;
   if (has_latest_rw_file) {
     std::string filename(VLogFileName(dbname_, latest_rw_file));
-    s = env_->GetFileSize(filename, &file_size);
-    s = env_->NewAppendableRandomAccessFile(filename, &file);
-    assert(s.ok());
-    s = VLogReader::Open(options_, file, file_size, &reader);
-
-    Log(options_.info_log, "Validating %s, file_size=%llu", filename.c_str(),
-        file_size);
-
-    bool valid = reader->Validate(&offset, &num_entries);
-    /*
-     * it's not expensive to reopen and re-create once more when recovering a
-     * database, we delete them here and re-create later for better code
-     * readability.
-     */
-    delete reader;
-    delete file;
-
-    if (!valid) {
-      /*
-       * The file's valid size is smaller than its actual size, repair it by
-       * truncating it to the valid size.
-       */
-      s = env_->TruncateFile(filename, offset);
-      Log(options_.info_log, "%s broken, truncating it from %llu to %llu",
-          filename.c_str(), file_size, offset);
-    }
+    ValidateAndTruncate(latest_rw_file, &offset, &num_entries, &file_size);
 
     if (offset <= (options_.max_vlog_file_size / 2)) {
       /*
@@ -462,6 +451,9 @@ Status ValueLogImpl::LogAndApply(BlobVersionEdit* edit) {
     }
     assert(f.number <= CurrentFileNumber());
     ro_files_.emplace(f.number, f);
+    if (pending_outputs_.count(f.number)) {
+      pending_outputs_.erase(f.number);
+    }
   }
 
   return s;
@@ -667,6 +659,47 @@ void ValueLogImpl::RemoveObsoleteFiles() {
     env_->RemoveFile(dbname_ + "/" + filename);
   }
   rwlock_.WLock();
+}
+
+Status ValueLogImpl::ValidateAndTruncate(uint64_t number, uint64_t* offset,
+                                         uint64_t* num_entries,
+                                         uint64_t* file_size) {
+  Status s;
+  std::string filename = VLogFileName(dbname_, number);
+  AppendableRandomAccessFile* file;
+  VLogReader* reader;
+
+  s = env_->GetFileSize(filename, file_size);
+  s = env_->NewAppendableRandomAccessFile(filename, &file);
+  assert(s.ok());
+  s = VLogReader::Open(options_, file, *file_size, &reader);
+  if (!s.ok()) {
+    delete file;
+    return s;
+  }
+
+  Log(options_.info_log, "Validating %s, file_size=%llu", filename.c_str(),
+      *file_size);
+
+  bool valid = reader->Validate(offset, num_entries);
+  /*
+   * it's not expensive to reopen and re-create once more when recovering a
+   * database, we delete them here and re-create later for better code
+   * readability.
+   */
+  delete reader;
+  delete file;
+
+  if (!valid) {
+    /*
+     * The file's valid size is smaller than its actual size, repair it by
+     * truncating it to the valid size.
+     */
+    s = env_->TruncateFile(filename, *offset);
+    Log(options_.info_log, "%s broken, truncating it from %llu to %llu",
+        filename.c_str(), *file_size, *offset);
+  }
+  return s;
 }
 
 }  // namespace leveldb

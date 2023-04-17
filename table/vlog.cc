@@ -361,6 +361,18 @@ void ValueBatch::Put(SequenceNumber seq, const Slice& key, const Slice& value) {
   num_entries++;
 }
 
+class ToWriteBatchHandler : public ValueBatch::Handler {
+ public:
+  ~ToWriteBatchHandler() override = default;
+  void operator()(const Slice& key, const Slice& value,
+                  ValueHandle handle) override {
+    handle.EncodeTo(&handle_encoding);
+    WriteBatchInternal::Put(batch, key, handle_encoding, kTypeValueHandle);
+  }
+  std::string handle_encoding;
+  WriteBatch* batch;
+};
+
 Status ValueBatch::ToWriteBatch(WriteBatch* batch) {
   assert(closed);
   assert(num_entries == handles_.size());
@@ -385,6 +397,26 @@ Status ValueBatch::ToWriteBatch(WriteBatch* batch) {
     return Status::Corruption("corrupted ValueBatch");
   }
   WriteBatchInternal::SetSequence(batch, first_seq);
+  return Status::OK();
+}
+
+Status ValueBatch::Iterate(ValueBatch::Handler* handler) {
+  assert(num_entries == handles_.size());
+  uint32_t found = 0;
+  SequenceNumber seq;
+  Slice user_key, value;
+  std::string handle_encoding;
+  Slice input(rep_.data(), rep_.size());
+
+  while (!input.empty()) {
+    if (ValueBatch::GetVLogRecord(&input, &user_key, &value, &seq)) {
+      (*handler)(user_key, value, handles_[found]);
+      found++;
+    }
+  }
+  if (found != num_entries) {
+    return Status::Corruption("corrupted ValueBatch");
+  }
   return Status::OK();
 }
 
