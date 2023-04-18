@@ -26,7 +26,12 @@ ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname,
       manifest_file_(nullptr),
       manifest_log_(nullptr),
       vlog_file_number_(0),
-      manifest_number_(0) {}
+      manifest_number_(0),
+      bg_garbage_collection_(false),
+      bg_work_cv_(&mutex_),
+      gc_pointer_(0),
+      manual_gc_(false),
+      gc_last_run_(std::chrono::system_clock::now()) {}
 
 Status ValueLogImpl::Put(const WriteOptions& options, const Slice& key,
                          const Slice& value, ValueHandle* handle) {
@@ -88,7 +93,7 @@ Status ValueLogImpl::GetLocked(const ReadOptions& options, VLogRWFile* rwfile,
       iter = vlog_cache_->NewIterator(options, handle.table_,
                                       it->second.file_size);
     } else {
-      return Status::InvalidArgument("value log number not exists");
+      return Status::NotFound("value log number not exists");
     }
   } else {
     /*
@@ -347,7 +352,12 @@ ValueLogImpl::~ValueLogImpl() {
   rwfile_->Unref();
   rwfile_ = nullptr;
 
+  mutex_.Lock();
   shutdown_.store(true, std::memory_order_release);
+  while (bg_garbage_collection_) {
+    bg_work_cv_.Wait();
+  }
+  mutex_.Unlock();
 
   delete manifest_log_;
   delete manifest_file_;
@@ -360,6 +370,10 @@ Status ValueLogImpl::FinishBuild() {
   VLogFileMeta f;
 
   rwfile_->Finish();
+
+  mutex_.Lock();
+  MaybeScheduleGC();
+  mutex_.Unlock();
 
   /*
    * We add rwfile to ro_files in advance
@@ -520,15 +534,21 @@ Status ValueLogImpl::NewBlobDB() {
 Iterator* ValueLogImpl::NewVLogFileIterator(const ReadOptions& options,
                                             uint64_t number) {
   rwlock_.AssertRLockHeld();
-  if (number == rwfile_->FileNumber()) {
-    return rwfile_->NewIterator(options);
+  Iterator* iter = nullptr;
+  VLogRWFile* rwfile = rwfile_;
+  if (rwfile_) rwfile_->Ref();
+
+  if (rwfile && number == rwfile_->FileNumber()) {
+    iter = rwfile->NewIterator(options);
   } else {
     auto it = ro_files_.find(number);
     if (it != ro_files_.end()) {
-      return vlog_cache_->NewIterator(options, number, it->second.file_size);
+      iter = vlog_cache_->NewIterator(options, number, it->second.file_size);
     }
   }
-  return nullptr;
+
+  if (rwfile) rwfile->Unref();
+  return iter;
 }
 
 static std::string Bytes2Size(uint64_t size) {

@@ -177,11 +177,7 @@ class ValueLogImpl {
 
   GarbageCollection* PickGC(uint64_t number);
 
-  Status Collect(GarbageCollection* gc) SHARED_LOCKS_REQUIRED(rwlock_);
-
-  Status Rewrite(GarbageCollection* gc);
-
-  Status ManualGC(uint64_t number);
+  void ManualGC(uint64_t number);
 
   void RemoveObsoleteFiles() EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
 
@@ -224,6 +220,20 @@ class ValueLogImpl {
 
   Status NewBlobDB();
 
+  Status Collect(GarbageCollection* gc);
+
+  Status Rewrite(GarbageCollection* gc);
+
+  static void BGWork(void* vlog);
+
+  void BGCall();
+
+  void MaybeScheduleGC();
+
+  void BackgroundGC();
+
+  void RecordBGError(Status&& s);
+
   struct ByFileNumber {
     bool operator()(VLogFileMeta* lhs, VLogFileMeta* rhs) const {
       return lhs->number < rhs->number;
@@ -251,15 +261,25 @@ class ValueLogImpl {
   VLogRWFile* rwfile_;
   std::map<uint64_t, VLogFileMeta> ro_files_
       GUARDED_BY(rwlock_);  // read-only vlog files
-
   VLogCache* const vlog_cache_{nullptr};
 
   /*
    * Garbage collection
    */
+  using TimePoint = std::chrono::time_point<std::chrono::system_clock>;
   std::set<uint64_t> pending_outputs_;  // GC thread is writing to these files
   std::map<uint64_t, SequenceNumber>
       obsolete_files_;  // <file_number, sequence>
+  uint64_t gc_pointer_;
+  bool manual_gc_;
+  uint64_t manual_gc_number;
+
+  port::Mutex mutex_;  // only used to protect following members
+  port::CondVar bg_work_cv_
+      GUARDED_BY(mutex_);  // synchronize GC thread and foreground threads
+  bool bg_garbage_collection_ GUARDED_BY(mutex_);
+  TimePoint gc_last_run_ GUARDED_BY(mutex_);
+  Status bg_error_ GUARDED_BY(mutex_);
 };
 
 }  // namespace leveldb

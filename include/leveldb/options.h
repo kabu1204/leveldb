@@ -161,6 +161,8 @@ struct LEVELDB_EXPORT Options {
 
   // 0-100
   int blob_gc_num_discard_threshold = 50;
+
+  int blob_gc_interval = 600;  // 10min
 };
 
 // Options that control read operations

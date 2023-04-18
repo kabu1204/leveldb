@@ -55,6 +55,11 @@ class RewriteLSMHandler : public ValueBatch::Handler {
 
   bool operator()(const Slice& key, const Slice& value,
                   ValueHandle handle) override {
+    if (shutdown->load(std::memory_order_acquire)) {
+      s = Status::IOError("ValueLog shutting down during GC rewrite");
+      return false;
+    }
+
     handle.EncodeTo(&handle_encoding);
     WriteBatchInternal::Put(&iter->first, key, handle_encoding,
                             kTypeValueHandle);
@@ -74,6 +79,7 @@ class RewriteLSMHandler : public ValueBatch::Handler {
   std::vector<std::pair<WriteBatch, ValueLogGCWriteCallback>>::iterator iter;
   std::vector<std::pair<WriteBatch, ValueLogGCWriteCallback>>::iterator end;
   WriteOptions opt;
+  std::atomic<bool>* shutdown;
   DBImpl* db;
   Status s;
 };
@@ -101,6 +107,106 @@ struct GarbageCollection {
   Status s;
 };
 
+void ValueLogImpl::BGWork(void* vlog) {
+  reinterpret_cast<ValueLogImpl*>(vlog)->BGCall();
+}
+
+/*
+ * We have no policy on when to GC and which file to GC, we just select one
+ * .vlog file polling and sleep for 10 minutes.
+ *
+ * TODO: Maybe the following policies are helpful:
+ *  1. utilize LSM compaction statistics to select file. (deleted/overwritten
+ * value handles)
+ *  2. sample blob records to get statistics
+ *  3. BG collect is cheaper than rewrite, we can compute scores for each file
+ * to guide our GC.
+ */
+void ValueLogImpl::BGCall() {
+  MutexLock l(&mutex_);
+  assert(bg_garbage_collection_);
+  if (shutdown_.load(std::memory_order_acquire)) {
+    // shutting down value log
+  } else if (!bg_error_.ok() && !bg_error_.IsNonFatal()) {
+    // stop
+    Log(options_.info_log, "Fatal BGError: %s", bg_error_.ToString().c_str());
+  } else {
+    mutex_.Unlock();
+    BackgroundGC();
+    mutex_.Lock();
+  }
+
+  bg_garbage_collection_ = false;
+  MaybeScheduleGC();
+  bg_work_cv_.SignalAll();
+}
+
+void ValueLogImpl::MaybeScheduleGC() {
+  mutex_.AssertHeld();
+  if (bg_garbage_collection_) {
+    // allow only one GC thread
+    // multiple GC threads is safe in theory, but I don't test :D
+  } else if (shutdown_.load(std::memory_order_acquire)) {
+    // shutting down value log
+  } else if (!bg_error_.ok() && !bg_error_.IsNonFatal()) {
+    // stop
+    Log(options_.info_log, "Fatal BGError: %s", bg_error_.ToString().c_str());
+  } else {
+    TimePoint now = std::chrono::system_clock::now();
+    std::chrono::duration<int> duration =
+        std::chrono::duration_cast<std::chrono::seconds>(now - gc_last_run_);
+    if (manual_gc_ || duration.count() > options_.blob_gc_interval) {
+      bg_garbage_collection_ = true;
+      env_->Schedule(&ValueLogImpl::BGWork, this);
+    }
+  }
+}
+
+void ValueLogImpl::BackgroundGC() {
+  rwlock_.WLock();
+  GarbageCollection* gc;
+  if (manual_gc_) {
+    gc = PickGC(manual_gc_number);
+    manual_gc_ = false;
+  } else {
+    gc = PickGC(gc_pointer_);
+    gc_pointer_ = gc ? gc->number + 1 : 0;
+  }
+  rwlock_.WUnlock();
+
+  if (!gc) {
+    RecordBGError(Status::NonFatal("Empty GC metadata, skip"));
+    return;
+  }
+
+  Status s;
+  s = Collect(gc);
+  if (!s.ok() && !s.IsNonFatal()) {
+    goto OUT;
+  }
+
+  TEST_SYNC_POINT("GC.AfterCollect");
+
+  s = Rewrite(gc);
+  if (!s.ok() && !s.IsNonFatal()) {
+    goto OUT;
+  }
+
+  {
+    MutexLock l(&mutex_);
+    gc_last_run_ = std::chrono::system_clock::now();
+  }
+
+OUT:
+  RecordBGError(std::move(s));
+  delete gc;
+}
+
+void ValueLogImpl::RecordBGError(Status&& s) {
+  MutexLock l(&mutex_);
+  bg_error_ = std::move(s);
+}
+
 /*
  * We not have any policies :)
  * We just pick the first valid vlog whose file_number >= number.
@@ -126,43 +232,38 @@ GarbageCollection* ValueLogImpl::PickGC(uint64_t number) {
   return gc;
 }
 
-Status ValueLogImpl::ManualGC(uint64_t number) {
-  ReadLock l(&rwlock_);
-  Status s;
-  GarbageCollection* gc = PickGC(number);
-  if (gc != nullptr) {
-    s = Collect(gc);
-    if (!s.ok()) {
-      return s;
-    }
-    rwlock_.RUnlock();
-    s = Rewrite(gc);
-    rwlock_.RLock();
-  } else {
-    return Status::InvalidArgument("Do not find a valid vlog for GC");
+void ValueLogImpl::ManualGC(uint64_t number) {
+  {
+    WriteLock l(&rwlock_);
+    manual_gc_ = true;
+    manual_gc_number = number;
   }
-  return s;
+
+  MutexLock l(&mutex_);
+  MaybeScheduleGC();
 }
 
 Status ValueLogImpl::Collect(GarbageCollection* gc) {
-  rwlock_.AssertRLockHeld();
+  ReadLock l(&rwlock_);
   assert(gc != nullptr);
   Log(options_.info_log, "Collecting old entries in vlog %llu\n", gc->number);
   Status s;
   uint64_t number = gc->number;
   if (number >= CurrentFileNumber() || number == 0) {
-    return Status::InvalidArgument("invalid file number",
-                                   std::to_string(number));
+    return Status::NonFatal("invalid file number", std::to_string(number));
   }
 
   VLogReaderIterator* iter = reinterpret_cast<VLogReaderIterator*>(
       NewVLogFileIterator(ReadOptions(), number));
   if (iter == nullptr) {
-    return Status::InvalidArgument("invalid file number",
-                                   std::to_string(number));
+    return Status::NonFatal("invalid file number", std::to_string(number));
   }
 
+  /*
+   * Unlock while reading from vlog file
+   */
   rwlock_.RUnlock();
+
   Slice key;
   std::string handle_encoding;
   ValueHandle handle, current;
@@ -199,8 +300,9 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
     rewrites.emplace_back(WriteBatch(),
                           ValueLogGCWriteCallback(key.ToString(), handle));
   }
-  rwlock_.RLock();
   delete iter;
+
+  rwlock_.RLock();
   return s;
 }
 
@@ -230,7 +332,7 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
           options_.blob_gc_size_discard_threshold &&
       (gc->discard_entries * 100 / gc->total_entries) <
           options_.blob_gc_num_discard_threshold) {
-    return Status::InvalidArgument(
+    return Status::NonFatal(
         "Discarded entries/size does not reach the threshold");
   }
 
@@ -301,6 +403,7 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
   opt.sync = false;
 
   RewriteLSMHandler handler;
+  handler.shutdown = &shutdown_;
   handler.iter = gc->rewrites.begin();
   handler.end = gc->rewrites.end();
   handler.opt = opt;

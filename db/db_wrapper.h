@@ -66,7 +66,11 @@ class DBWrapper : public DB {
 
   std::string DebugString();
 
-  Status ManualGC(uint64_t number);
+  void ManualGC(uint64_t number);
+
+  void WaitVLogGC();
+
+  Status VLogBGError();
 
  private:
   friend class DB;

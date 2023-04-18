@@ -116,23 +116,49 @@ Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
  * ValueHandle retrieved by <R_PTR>, because we <W_VLOG> before <W_PTR>.
  *
  * When GC is enabled, <R_VLOG> may return the bad value(either NotFound or
- * incorrect), because the corresponding .vlog file maybe deleted or rewritten
- * between <R_PTR> and <R_VLOG>.
+ * incorrect), because the corresponding .vlog file maybe deleted between
+ * <R_PTR> and <R_VLOG>. We address this issue without extra synchronization,
+ * see comments below.
  */
 Status DBWrapper::Get(const ReadOptions& options, const Slice& key,
                       std::string* value) {
   ValueType valueType;
-  Status status = db_->Get(options, key, value, &valueType);
-  if (!status.ok() || valueType != kTypeValueHandle) {
-    return status;
+  Status s = db_->Get(options, key, value, &valueType);
+  if (!s.ok() || valueType != kTypeValueHandle) {
+    return s;
   }
 
   ValueHandle handle;
   Slice input(*value);
   handle.DecodeFrom(&input);
-  status = vlog_->Get(options, handle, value);
+  s = vlog_->Get(options, handle, value);
 
-  return status;
+  if (s.ok() || options.snapshot != nullptr || !s.IsNotFound()) {
+    // most cases
+  } else if (!s.IsNotFound()) {
+    // maybe a fatal error
+  } else if (options.snapshot != nullptr) {
+    /*
+     * vlog->Get() returns a not found, indicating the target file is not found.
+     *
+     * When options.snapshot != nullptr, the vlog guarantees the file pointed by
+     * handle will not be removed.
+     *
+     * When options.snapshot == nullptr, the target file maybe removed by vlog
+     * because the smallest sequence of DB > the obsolete sequence of the file.
+     * (see comments of ValueLogImpl::Collect and
+     * ValueLogImpl::RemoveObsoleteFiles)
+     *
+     * In the later case (which is rare), we GetSnapshot and retry.
+     */
+  } else {
+    ReadOptions opt = options;
+    opt.snapshot = db_->GetSnapshot();
+    s = Get(opt, key, value);
+    db_->ReleaseSnapshot(opt.snapshot);
+    return s;
+  }
+  return s;
 }
 
 Status DBWrapper::Put(const WriteOptions& options, const Slice& key,
@@ -214,13 +240,25 @@ Status DBWrapper::Open(const Options& options, const std::string& name,
   return s;
 }
 
-Status DBWrapper::ManualGC(uint64_t number) { return vlog_->ManualGC(number); }
+void DBWrapper::ManualGC(uint64_t number) { vlog_->ManualGC(number); }
+
+Status DBWrapper::VLogBGError() {
+  MutexLock l(&vlog_->mutex_);
+  return vlog_->bg_error_;
+}
 
 Status DBWrapper::SyncLSM() { return db_->Sync(); }
 
 void DBWrapper::RemoveObsoleteBlob() {
   WriteLock l(&vlog_->rwlock_);
   vlog_->RemoveObsoleteFiles();
+}
+
+void DBWrapper::WaitVLogGC() {
+  MutexLock l(&vlog_->mutex_);
+  while (vlog_->bg_garbage_collection_) {
+    vlog_->bg_work_cv_.Wait();
+  }
 }
 
 }  // namespace leveldb

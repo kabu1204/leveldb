@@ -55,6 +55,12 @@ class LEVELDB_EXPORT Status {
     return Status(kIOError, msg, msg2);
   }
 
+  static Status NonFatal(const Slice& msg, const Slice& msg2 = Slice()) {
+    return Status(kNonFatal, msg, msg2);
+  }
+
+  bool IsNonFatal() const { return code() == kNonFatal; }
+
   bool IsValueHandle() const { return code() == kValueHandle; }
 
   // Returns true iff the status indicates success.
@@ -87,7 +93,8 @@ class LEVELDB_EXPORT Status {
     kCorruption = 3,
     kNotSupported = 4,
     kInvalidArgument = 5,
-    kIOError = 6
+    kNonFatal = 6,
+    kIOError = 7
   };
 
   Code code() const {
