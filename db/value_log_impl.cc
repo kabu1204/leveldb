@@ -29,10 +29,10 @@ ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname,
       manifest_number_(0) {}
 
 Status ValueLogImpl::Put(const WriteOptions& options, const Slice& key,
-                         const Slice& value, uint64_t seq, ValueHandle* handle) {
+                         const Slice& value, ValueHandle* handle) {
   Status s;
   ValueBatch batch;
-  batch.Put(seq, key, value);
+  batch.Put(key, value);
   s = Write(options, &batch);
   *handle = batch.handles_[0];
   return s;

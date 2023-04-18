@@ -160,7 +160,7 @@ class ValueLogImpl {
    * concurrent Put() is unsafe
    */
   Status Put(const WriteOptions& options, const Slice& key, const Slice& value,
-             uint64_t seq, ValueHandle* handle);
+             ValueHandle* handle);
 
   Status Write(const WriteOptions& options, ValueBatch* batch);
 

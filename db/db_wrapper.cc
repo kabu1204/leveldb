@@ -23,8 +23,7 @@ class DivideHandler : public WriteBatch::Handler {
 
   void Put(const Slice& key, const Slice& value) override {
     if (value.size() > threshold) {
-      vb->Put(sequence_, key, value);
-      sequence_++;
+      vb->Put(key, value);
     } else {
       small->Put(key, value);
     }
@@ -32,7 +31,6 @@ class DivideHandler : public WriteBatch::Handler {
 
   void Delete(const Slice& key) override { small->Delete(key); }
 
-  SequenceNumber sequence_;
   size_t threshold;
   ValueBatch* vb;
   WriteBatch* small;
@@ -102,9 +100,7 @@ Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
   handler.threshold = options_.vlog_value_size_threshold;
   handler.small = small;
   handler.vb = large;
-  handler.sequence_ = WriteBatchInternal::Sequence(input);
   Status s = input->Iterate(&handler);
-  WriteBatchInternal::SetSequence(small, handler.sequence_);
   return s;
 }
 

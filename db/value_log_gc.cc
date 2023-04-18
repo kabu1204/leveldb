@@ -49,6 +49,35 @@ class ValueLogGCWriteCallback : public WriteCallback {
   ValueHandle handle_;
 };
 
+class RewriteLSMHandler : public ValueBatch::Handler {
+ public:
+  ~RewriteLSMHandler() override = default;
+
+  bool operator()(const Slice& key, const Slice& value,
+                  ValueHandle handle) override {
+    handle.EncodeTo(&handle_encoding);
+    WriteBatchInternal::Put(&iter->first, key, handle_encoding,
+                            kTypeValueHandle);
+    s = db->Write(opt, &iter->first, &iter->second);
+    if (!s.ok()) {
+      s = Status::IOError("failed to write to LSM", s.ToString());
+      return false;
+    }
+    ++iter;
+    if (iter == end) {
+      return false;
+    }
+    return true;
+  }
+
+  std::string handle_encoding;
+  std::vector<std::pair<WriteBatch, ValueLogGCWriteCallback>>::iterator iter;
+  std::vector<std::pair<WriteBatch, ValueLogGCWriteCallback>>::iterator end;
+  WriteOptions opt;
+  DBImpl* db;
+  Status s;
+};
+
 /*
  * TODO: collect several files in one GC
  */
@@ -134,8 +163,7 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
   }
 
   rwlock_.RUnlock();
-  uint64_t seq;
-  Slice ikey, key;
+  Slice key;
   std::string handle_encoding;
   ValueHandle handle, current;
   ValueBatch& vb = gc->value_batch;
@@ -143,37 +171,33 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
       gc->rewrites;
   current.table_ = number;
   for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
-    ikey = iter->key();
-    if (ValueBatch::GetInternalKeySeq(&ikey, ikey.size(), &key, &seq)) {
-      s = db_->Get(ReadOptions(), key, &handle_encoding);
-      if (!s.ok() && !s.IsNotFound()) {
-        s = Status::IOError("[GC] failed to Get from DBImpl", s.ToString());
-        break;
-      }
+    key = iter->key();
 
-      iter->GetValueHandle(&current);
-
-      gc->total_entries++;
-      gc->total_size += current.size_;
-
-      Slice input(handle_encoding);
-      handle.DecodeFrom(&input);
-      if (s.IsNotFound() || handle != current) {
-        gc->discard_entries++;
-        gc->discard_size += current.size_;
-        continue;
-      }
-
-      /*
-       * We need to keep the entry.
-       */
-      vb.Put(seq, key, iter->value());
-      rewrites.emplace_back(WriteBatch(),
-                            ValueLogGCWriteCallback(key.ToString(), handle));
-    } else {
-      s = Status::Corruption("[GC] failed to decode vlog internal key", ikey);
+    s = db_->Get(ReadOptions(), key, &handle_encoding);
+    if (!s.ok() && !s.IsNotFound()) {
+      s = Status::IOError("[GC] failed to Get from DBImpl", s.ToString());
       break;
     }
+
+    iter->GetValueHandle(&current);
+
+    gc->total_entries++;
+    gc->total_size += current.size_;
+
+    Slice input(handle_encoding);
+    handle.DecodeFrom(&input);
+    if (s.IsNotFound() || handle != current) {
+      gc->discard_entries++;
+      gc->discard_size += current.size_;
+      continue;
+    }
+
+    /*
+     * We need to keep the entry.
+     */
+    vb.Put(key, iter->value());
+    rewrites.emplace_back(WriteBatch(),
+                          ValueLogGCWriteCallback(key.ToString(), handle));
   }
   rwlock_.RLock();
   delete iter;
@@ -275,21 +299,18 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
   Log(options_.info_log, "[GC #%llu] Rewriting to LSM, vlog#%llu", gc->number,
       number);
   opt.sync = false;
-  int i = 0;
-  std::string handle_encoding;
-  const std::vector<ValueHandle>& handles = gc->value_batch.Handles();
-  for (auto& p : gc->rewrites) {  // <WriteBatch, ValueLogGCWriteCallback>
-    // set rewrite value handles
-    handles[i++].EncodeTo(&handle_encoding);
-    WriteBatchInternal::Put(&p.first, p.second.key(), handle_encoding,
-                            kTypeValueHandle);
 
-    // write to LSM
-    s = db_->Write(opt, &p.first, &p.second);
-    if (!s.ok()) {
-      return Status::IOError("failed to write to LSM", s.ToString());
-    }
+  RewriteLSMHandler handler;
+  handler.iter = gc->rewrites.begin();
+  handler.end = gc->rewrites.end();
+  handler.opt = opt;
+  handler.db = db_;
+
+  s = gc->value_batch.Iterate(&handler);
+  if (!s.ok() || !handler.s.ok()) {
+    return Status::IOError("GC", handler.s.ToString());
   }
+
   s = db_->Sync();
   if (!s.ok()) {
     return s;

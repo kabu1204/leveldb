@@ -2,10 +2,9 @@
 // Created by 于承业 on 2023/3/29.
 //
 // Entry in the .vlog file:
-//  key_len+8:  VarUint32
+//  key_len:    VarUint32
 //  value_len:  VarUint32
 //  key:        uint8[key_len]
-//  SeqNum:     Fixed64
 //  value:      uint8[value_len]
 
 #include "table/vlog.h"
@@ -300,46 +299,36 @@ bool VLogReader::Validate(uint64_t* offset, uint64_t* num_entries) {
   return *offset == rep_->limit;
 }
 
-char* ValueBatch::EncodeInternalKey(char* ptr, const Slice& user_key,
-                                    uint64_t seq) {
-  std::memcpy(ptr, user_key.data(), user_key.size());
-  EncodeFixed64(ptr + user_key.size(), seq);
-  return ptr + user_key.size() + sizeof(uint64_t);
+char* ValueBatch::EncodeKey(char* ptr, const Slice& key) {
+  std::memcpy(ptr, key.data(), key.size());
+  return ptr + key.size();
 }
 
-void ValueBatch::PutInternalKey(std::string* dst, const Slice& user_key,
-                                uint64_t seq) {
-  dst->append(user_key.data(), user_key.size());
-  PutFixed64(dst, seq);
+void ValueBatch::PutKey(std::string* dst, const Slice& key) {
+  dst->append(key.data(), key.size());
 }
 
-uint64_t ValueBatch::DecodeInternalKey(const char* ptr, const char* end,
-                                       Slice* user_key) {
-  *user_key = Slice(ptr, end - ptr - sizeof(uint64_t));
-  return DecodeFixed64(end - sizeof(uint64_t));
+void ValueBatch::DecodeKey(const char* ptr, const char* end, Slice* key) {
+  *key = Slice(ptr, end - ptr);
 }
 
-bool ValueBatch::GetInternalKeySeq(Slice* input, size_t n, Slice* user_key,
-                                   uint64_t* seq) {
+bool ValueBatch::GetKey(Slice* input, size_t n, Slice* key) {
   if (n > input->size()) {
     return false;
   }
-  const char* p = input->data();
-  const char* end = p + n;
-  *seq = ValueBatch::DecodeInternalKey(p, end, user_key);
+  *key = Slice(input->data(), n);
   input->remove_prefix(n);
   return true;
 }
 
-bool ValueBatch::GetVLogRecord(Slice* input, Slice* user_key, Slice* value,
-                               uint64_t* seq) {
+bool ValueBatch::GetVLogRecord(Slice* input, Slice* key, Slice* value) {
   const char* p = input->data();
   const char* limit = input->data() + input->size();
-  uint32_t ikey_size, value_size;
-  const char* q = DecodeEntry(p, limit, &ikey_size, &value_size);
-  if (q != nullptr && (limit - q >= ikey_size + value_size)) {
+  uint32_t key_size, value_size;
+  const char* q = DecodeEntry(p, limit, &key_size, &value_size);
+  if (q != nullptr && (limit - q >= key_size + value_size)) {
     input->remove_prefix(q - p);
-    ValueBatch::GetInternalKeySeq(input, ikey_size, user_key, seq);
+    ValueBatch::GetKey(input, key_size, key);
     if (value != nullptr) {
       *value = Slice(input->data(), value_size);
     }
@@ -350,12 +339,12 @@ bool ValueBatch::GetVLogRecord(Slice* input, Slice* user_key, Slice* value,
 }
 
 // should be called after SetSequence()
-void ValueBatch::Put(SequenceNumber seq, const Slice& key, const Slice& value) {
+void ValueBatch::Put(const Slice& key, const Slice& value) {
   assert(!closed);
   uint32_t off = rep_.size();
-  PutVarint32(&rep_, key.size() + sizeof(uint64_t));
+  PutVarint32(&rep_, key.size());
   PutVarint32(&rep_, value.size());
-  ValueBatch::PutInternalKey(&rep_, key, seq);
+  ValueBatch::PutKey(&rep_, key);
   rep_.append(value.data(), value.size());
   handles_.emplace_back(0, 0, off, rep_.size() - off);
   num_entries++;
@@ -364,10 +353,11 @@ void ValueBatch::Put(SequenceNumber seq, const Slice& key, const Slice& value) {
 class ToWriteBatchHandler : public ValueBatch::Handler {
  public:
   ~ToWriteBatchHandler() override = default;
-  void operator()(const Slice& key, const Slice& value,
+  bool operator()(const Slice& key, const Slice& value,
                   ValueHandle handle) override {
     handle.EncodeTo(&handle_encoding);
     WriteBatchInternal::Put(batch, key, handle_encoding, kTypeValueHandle);
+    return true;
   }
   std::string handle_encoding;
   WriteBatch* batch;
@@ -376,41 +366,24 @@ class ToWriteBatchHandler : public ValueBatch::Handler {
 Status ValueBatch::ToWriteBatch(WriteBatch* batch) {
   assert(closed);
   assert(num_entries == handles_.size());
-  uint32_t found = 0;
-  SequenceNumber first_seq, seq;
-  Slice user_key;
-  std::string handle_encoding;
-  Slice input(rep_.data(), rep_.size());
+  ToWriteBatchHandler handler;
+  handler.batch = batch;
 
-  while (!input.empty()) {
-    if (ValueBatch::GetVLogRecord(&input, &user_key, nullptr, &seq)) {
-      if (!found) {
-        first_seq = seq;
-      }
-      handles_[found].EncodeTo(&handle_encoding);
-      WriteBatchInternal::Put(batch, user_key, Slice(handle_encoding),
-                              kTypeValueHandle);
-      found++;
-    }
-  }
-  if (found != num_entries) {
-    return Status::Corruption("corrupted ValueBatch");
-  }
-  WriteBatchInternal::SetSequence(batch, first_seq);
-  return Status::OK();
+  return Iterate(&handler);
 }
 
 Status ValueBatch::Iterate(ValueBatch::Handler* handler) {
   assert(num_entries == handles_.size());
   uint32_t found = 0;
-  SequenceNumber seq;
   Slice user_key, value;
   std::string handle_encoding;
   Slice input(rep_.data(), rep_.size());
 
   while (!input.empty()) {
-    if (ValueBatch::GetVLogRecord(&input, &user_key, &value, &seq)) {
-      (*handler)(user_key, value, handles_[found]);
+    if (ValueBatch::GetVLogRecord(&input, &user_key, &value)) {
+      if (!(*handler)(user_key, value, handles_[found])) {
+        return Status::OK();
+      }
       found++;
     }
   }

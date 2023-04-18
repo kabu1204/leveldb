@@ -38,9 +38,8 @@ uint32_t SizeOfVariant32(uint32_t v) {
 }
 
 uint64_t SizeOf(const Slice& key, const Slice& val) {
-  return SizeOfVariant32(key.size() + sizeof(uint64_t)) +
-         SizeOfVariant32(val.size()) + key.size() + val.size() +
-         sizeof(uint64_t);
+  return SizeOfVariant32(key.size()) + SizeOfVariant32(val.size()) +
+         key.size() + val.size();
 }
 
 TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
@@ -649,7 +648,6 @@ TEST(VLOG_TEST, ValueLogRecover) {
   options.create_if_missing = true;
   options.max_vlog_file_size = 8 << 20;
   std::string dbname("testdb");
-  SequenceNumber seq = 1;
   CleanDir(options.env, dbname);
 
   DB* db;
@@ -660,48 +658,48 @@ TEST(VLOG_TEST, ValueLogRecover) {
   ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
   ValueHandle handle;
-  v->Put(WriteOptions(), "k01", "value01", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(3, 0, 0, 20));
-  v->Put(WriteOptions(), "k02", "value02", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(3, 0, 20, 20));
-  v->Put(WriteOptions(), "k03", "value03", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(3, 0, 40, 20));
+  v->Put(WriteOptions(), "k01", "value01", &handle);
+  ASSERT_EQ(handle, ValueHandle(3, 0, 0, 12));
+  v->Put(WriteOptions(), "k02", "value02", &handle);
+  ASSERT_EQ(handle, ValueHandle(3, 0, 12, 12));
+  v->Put(WriteOptions(), "k03", "value03", &handle);
+  ASSERT_EQ(handle, ValueHandle(3, 0, 24, 12));
 
   delete v;
 
   ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
   std::string value;
-  v->Get(ReadOptions(), ValueHandle(3, 0, 0, 20), &value);
+  v->Get(ReadOptions(), ValueHandle(3, 0, 0, 12), &value);
   ASSERT_EQ(value, "value01");
-  v->Get(ReadOptions(), ValueHandle(3, 0, 20, 20), &value);
+  v->Get(ReadOptions(), ValueHandle(3, 0, 12, 12), &value);
   ASSERT_EQ(value, "value02");
-  v->Get(ReadOptions(), ValueHandle(3, 0, 40, 0), &value);
+  v->Get(ReadOptions(), ValueHandle(3, 0, 24, 0), &value);
   ASSERT_EQ(value, "value03");
 
-  v->Put(WriteOptions(), "k04", "value04", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(3, 0, 60, 20));
-  v->Put(WriteOptions(), "k05", "value05", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(3, 0, 80, 20));
-  v->Put(WriteOptions(), "k06", "value06", seq++, &handle);
-  ASSERT_EQ(handle, ValueHandle(3, 0, 100, 20));
+  v->Put(WriteOptions(), "k04", "value04", &handle);
+  ASSERT_EQ(handle, ValueHandle(3, 0, 36, 12));
+  v->Put(WriteOptions(), "k05", "value05", &handle);
+  ASSERT_EQ(handle, ValueHandle(3, 0, 48, 12));
+  v->Put(WriteOptions(), "k06", "value06", &handle);
+  ASSERT_EQ(handle, ValueHandle(3, 0, 60, 12));
 
   // simulate broken .vlog file with last few records lost caused by OS crash
-  for (int i = 100; i < 120; i++) {
+  for (int i = 60; i < 72; i++) {
     delete v;
     options.env->TruncateFile(VLogFileName(dbname, 3), i);
     ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
-    v->Put(WriteOptions(), "k06", "value06", seq++, &handle);
-    ASSERT_EQ(handle, ValueHandle(3, 0, 100, 20));
+    v->Put(WriteOptions(), "k06", "value06", &handle);
+    ASSERT_EQ(handle, ValueHandle(3, 0, 60, 12));
   }
 
-  uint32_t size = 120;
+  uint32_t size = 72;
   uint32_t num_entries = 6;
   for (int i = 0; size <= options.max_vlog_file_size / 2; i++) {
     Slice key("k0" + std::to_string(i + 7));
     Slice val("value0" + std::to_string(i + 7));
-    v->Put(WriteOptions(), key, val, seq++, &handle);
+    v->Put(WriteOptions(), key, val, &handle);
     ASSERT_EQ(handle, ValueHandle(3, 0, size, SizeOf(key, val)));
     size += SizeOf(key, val);
     num_entries++;
@@ -714,8 +712,8 @@ TEST(VLOG_TEST, ValueLogRecover) {
   for (int i = 1; i <= num_entries; i++) {
     Slice key("k1" + std::to_string(i));
     Slice val("value1" + std::to_string(i));
-    v->Put(WriteOptions(), key, val, seq++, &handle);
-    ASSERT_EQ(handle, ValueHandle(26, 0, size, SizeOf(key, val)));
+    v->Put(WriteOptions(), key, val, &handle);
+    ASSERT_EQ(handle, ValueHandle(18, 0, size, SizeOf(key, val)));
     size += SizeOf(key, val);
   }
 
@@ -723,7 +721,7 @@ TEST(VLOG_TEST, ValueLogRecover) {
   for (int i = 1; i <= num_entries; i++) {
     Slice key("k1" + std::to_string(i));
     Slice val("value1" + std::to_string(i));
-    s = v->Get(ReadOptions(), ValueHandle(26, 0, size, SizeOf(key, val)),
+    s = v->Get(ReadOptions(), ValueHandle(18, 0, size, SizeOf(key, val)),
                &value);
     ASSERT_TRUE(s.ok());
     ASSERT_EQ(Slice(value), val);
@@ -734,7 +732,7 @@ TEST(VLOG_TEST, ValueLogRecover) {
   for (int i = 1; i <= 1000000; i++) {
     Slice key("k1" + std::to_string(i));
     Slice val("value1" + std::to_string(i));
-    s = v->Put(WriteOptions(), key, val, seq++, &handle);
+    s = v->Put(WriteOptions(), key, val, &handle);
     ASSERT_TRUE(s.ok());
     size += SizeOf(key, val);
   }
@@ -756,7 +754,6 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
 
   DBWrapper* db;
   DBWrapper::Open(options, dbname, &db);
-  std::atomic<SequenceNumber> seq{1};
   std::deque<std::pair<std::string, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);
@@ -774,7 +771,7 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
 
   for (int i = 0; i < n_writers; i++) {
     wth[i] = new std::thread(
-        [&lk, &kvq, db, &cv, &seq, per_writer](int k) {
+        [&lk, &kvq, db, &cv, per_writer](int k) {
           for (int j = k * per_writer; j < (k + 1) * per_writer; ++j) {
             std::string key("k0" + std::to_string(j));
             std::string val("value0" + std::to_string(j) +
