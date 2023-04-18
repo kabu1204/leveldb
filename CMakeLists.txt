@@ -132,7 +132,7 @@ endif(BUILD_SHARED_LIBS)
 # Must be included before CMAKE_INSTALL_INCLUDEDIR is used.
 include(GNUInstallDirs)
 
-add_library(leveldb "" db/value_log_gc.cc db/value_log_version.cc db/value_log_version.h)
+add_library(leveldb "")
 target_sources(leveldb
         PRIVATE
         "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
@@ -170,6 +170,9 @@ target_sources(leveldb
         "db/write_batch.cc"
         "db/value_log_impl.cc"
         "db/value_log_impl.h"
+        "db/value_log_gc.cc"
+        "db/value_log_version.cc"
+        "db/value_log_version.h"
         "table/value_table.cc"
         "table/value_table.h"
         "table/value_block.cc"

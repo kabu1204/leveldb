@@ -196,11 +196,11 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
   Status s;
   assert(gc != nullptr);
   Log(options_.info_log, "Rewriting vlog %llu\n", gc->number);
-  Log(options_.info_log, "[GC] Size based discard ratio: %u/%u = %d%%",
-      gc->discard_size, gc->total_size,
+  Log(options_.info_log, "[GC #%llu] Size based discard ratio: %u/%u = %d%%",
+      gc->number, gc->discard_size, gc->total_size,
       (gc->discard_size * 100 / gc->total_size));
-  Log(options_.info_log, "[GC] Num based discard ratio: %u/%u = %d%%",
-      gc->discard_entries, gc->total_entries,
+  Log(options_.info_log, "[GC #%llu] Num based discard ratio: %u/%u = %d%%",
+      gc->number, gc->discard_entries, gc->total_entries,
       (gc->discard_entries * 100 / gc->total_entries));
   if ((gc->discard_size * 100 / gc->total_size) <
           options_.blob_gc_size_discard_threshold &&
@@ -208,6 +208,17 @@ Status ValueLogImpl::Rewrite(GarbageCollection* gc) {
           options_.blob_gc_num_discard_threshold) {
     return Status::InvalidArgument(
         "Discarded entries/size does not reach the threshold");
+  }
+
+  if (gc->discard_entries == gc->total_entries) {
+    Log(options_.info_log,
+        "[GC #%llu] All entries discarded, removing the entire file",
+        gc->number);
+    gc->obsolete_sequence = db_->LatestSequence();
+    BlobVersionEdit edit;
+    edit.DeleteFile(gc->number, gc->obsolete_sequence);
+    WriteLock l(&rwlock_);
+    return LogAndApply(&edit);
   }
 
   /*

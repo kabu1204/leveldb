@@ -237,6 +237,14 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
   delete db;
   DBWrapper::Open(options, dbname, &db);
 
+  validate_fn();
+
+  TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterValueRewrite");
+  TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterLSMRewrite");
+
+  s = db->ManualGC(7);  // discard ratio ~100%
+  ASSERT_TRUE(s.ok());
+
   // Put one more record to expire the old vlog file
   db->Put(WriteOptions(), "OneMoreKey", "value");
   db->RemoveObsoleteBlob();
