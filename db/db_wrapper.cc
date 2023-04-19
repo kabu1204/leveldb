@@ -233,6 +233,9 @@ Status DBWrapper::Open(const Options& options, const std::string& name,
     delete db;
     return s;
   }
+  options.env->SetPoolBackgroundThreads(
+      options.blob_background_read_threads + 1 +
+      options.env->GetPoolBackgroundThreads());
   DBWrapper* dbWrapper = new DBWrapper(options, name, db, vlog);
   if (dbptr != nullptr) {
     *dbptr = dbWrapper;

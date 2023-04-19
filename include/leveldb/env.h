@@ -209,8 +209,18 @@ class LEVELDB_EXPORT Env {
   // serialized.
   virtual void Schedule(void (*function)(void* arg), void* arg) = 0;
 
+  // Set the max number of bg threads in thread pool.
+  virtual void SetPoolBackgroundThreads(int num) = 0;
+
+  // Get the max number of bg threads in thread pool.
+  virtual int GetPoolBackgroundThreads() = 0;
+
+  // Wait for all jobs to complete and join all background threads
+  virtual void WaitForJoin() = 0;
+
   // Start a new thread, invoking "function(arg)" within the new thread.
   // When "function(arg)" returns, the thread will be destroyed.
+  // The started thread is not belonged to thread pool.
   virtual void StartThread(void (*function)(void* arg), void* arg) = 0;
 
   // *path is set to a temporary directory that can be used for testing. It may
@@ -422,9 +432,21 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
     return target_->LockFile(f, l);
   }
   Status UnlockFile(FileLock* l) override { return target_->UnlockFile(l); }
+
   void Schedule(void (*f)(void*), void* a) override {
     return target_->Schedule(f, a);
   }
+
+  void SetPoolBackgroundThreads(int num) override {
+    return target_->SetPoolBackgroundThreads(num);
+  }
+
+  int GetPoolBackgroundThreads() override {
+    return target_->GetPoolBackgroundThreads();
+  }
+
+  void WaitForJoin() override { target_->WaitForJoin(); }
+
   void StartThread(void (*f)(void*), void* a) override {
     return target_->StartThread(f, a);
   }

@@ -173,6 +173,8 @@ target_sources(leveldb
         "db/value_log_gc.cc"
         "db/value_log_version.cc"
         "db/value_log_version.h"
+        "util/threadpool_impl.cc"
+        "util/threadpool_impl.h"
         "table/value_table.cc"
         "table/value_table.h"
         "table/value_block.cc"

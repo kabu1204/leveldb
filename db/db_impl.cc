@@ -1849,6 +1849,7 @@ DB::~DB() = default;
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
   *dbptr = nullptr;
 
+  options.env->SetPoolBackgroundThreads(1);  // compaction
   DBImpl* impl = new DBImpl(options, dbname);
   impl->mutex_.Lock();
   VersionEdit edit;

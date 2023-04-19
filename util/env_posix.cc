@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <queue>
 #include <set>
 #include <string>
@@ -36,6 +37,7 @@
 #include "util/env_posix_test_helper.h"
 #include "util/mutexlock.h"
 #include "util/posix_logger.h"
+#include "util/threadpool_impl.h"
 
 namespace leveldb {
 
@@ -885,15 +887,19 @@ class PosixEnv : public Env {
   void Schedule(void (*background_work_function)(void* background_work_arg),
                 void* background_work_arg) override;
 
+  void SetPoolBackgroundThreads(int num) override;
+
+  int GetPoolBackgroundThreads() override;
+
+  void WaitForJoin() override;
+
   void StartThread(void (*thread_main)(void* thread_main_arg),
                    void* thread_main_arg) override {
     std::thread new_thread(thread_main, thread_main_arg);
     new_thread.detach();
   }
 
-  size_t PageSize() const override {
-    return getpagesize();
-  }
+  size_t PageSize() const override { return getpagesize(); }
 
   Status GetTestDirectory(std::string* result) override {
     const char* env = std::getenv("TEST_TMPDIR");
@@ -948,32 +954,7 @@ class PosixEnv : public Env {
   }
 
  private:
-  void BackgroundThreadMain();
-
-  static void BackgroundThreadEntryPoint(PosixEnv* env) {
-    env->BackgroundThreadMain();
-  }
-
-  // Stores the work item data in a Schedule() call.
-  //
-  // Instances are constructed on the thread calling Schedule() and used on the
-  // background thread.
-  //
-  // This structure is thread-safe because it is immutable.
-  struct BackgroundWorkItem {
-    explicit BackgroundWorkItem(void (*function)(void* arg), void* arg)
-        : function(function), arg(arg) {}
-
-    void (*const function)(void*);
-    void* const arg;
-  };
-
-  port::Mutex background_work_mutex_;
-  port::CondVar background_work_cv_ GUARDED_BY(background_work_mutex_);
-  bool started_background_thread_ GUARDED_BY(background_work_mutex_);
-
-  std::queue<BackgroundWorkItem> background_work_queue_
-      GUARDED_BY(background_work_mutex_);
+  ThreadPoolImpl thread_pool_;
 
   PosixLockTable locks_;  // Thread-safe.
   Limiter mmap_limiter_;  // Thread-safe.
@@ -1008,51 +989,25 @@ int MaxOpenFiles() {
 
 }  // namespace
 
-PosixEnv::PosixEnv()
-    : background_work_cv_(&background_work_mutex_),
-      started_background_thread_(false),
-      mmap_limiter_(MaxMmaps()),
-      fd_limiter_(MaxOpenFiles()) {}
+PosixEnv::PosixEnv() : mmap_limiter_(MaxMmaps()), fd_limiter_(MaxOpenFiles()) {}
 
 void PosixEnv::Schedule(
     void (*background_work_function)(void* background_work_arg),
     void* background_work_arg) {
-  background_work_mutex_.Lock();
-
-  // Start the background thread, if we haven't done so already.
-  if (!started_background_thread_) {
-    started_background_thread_ = true;
-    std::thread background_thread(PosixEnv::BackgroundThreadEntryPoint, this);
-    background_thread.detach();
-  }
-
-  // If the queue is empty, the background thread may be waiting for work.
-  if (background_work_queue_.empty()) {
-    background_work_cv_.Signal();
-  }
-
-  background_work_queue_.emplace(background_work_function, background_work_arg);
-  background_work_mutex_.Unlock();
+  thread_pool_.Schedule(background_work_function, background_work_arg);
 }
 
-void PosixEnv::BackgroundThreadMain() {
-  while (true) {
-    background_work_mutex_.Lock();
-
-    // Wait until there is work to be done.
-    while (background_work_queue_.empty()) {
-      background_work_cv_.Wait();
-    }
-
-    assert(!background_work_queue_.empty());
-    auto background_work_function = background_work_queue_.front().function;
-    void* background_work_arg = background_work_queue_.front().arg;
-    background_work_queue_.pop();
-
-    background_work_mutex_.Unlock();
-    background_work_function(background_work_arg);
-  }
+// Set the max number of bg threads in thread pool.
+void PosixEnv::SetPoolBackgroundThreads(int num) {
+  thread_pool_.SetBackgroundThreads(num);
 }
+
+// Get the max number of bg threads in thread pool.
+int PosixEnv::GetPoolBackgroundThreads() {
+  return thread_pool_.GetBackgroundThreads();
+}
+
+void PosixEnv::WaitForJoin() { thread_pool_.WaitForJobsAndJoinAllThreads(); }
 
 namespace {
 
