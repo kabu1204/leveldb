@@ -183,12 +183,12 @@ Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
   uint32_t seed;
   Iterator* iter = db_->NewInternalIterator(options, &latest_snapshot, &seed);
   return NewBlobDBIterator(
-      db_, vlog_, db_->user_comparator(), iter,
+      db_, vlog_, options_.env, db_->user_comparator(), iter,
       (options.snapshot != nullptr
            ? static_cast<const SnapshotImpl*>(options.snapshot)
                  ->sequence_number()
            : latest_snapshot),
-      seed);
+      seed, options.blob_prefetch, options_.blob_background_read_threads);
 }
 
 const Snapshot* DBWrapper::GetSnapshot() { return db_->GetSnapshot(); }

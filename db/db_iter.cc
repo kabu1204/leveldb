@@ -8,6 +8,8 @@
 #include "db/dbformat.h"
 #include "db/filename.h"
 #include "db/value_log_impl.h"
+#include <deque>
+#include <future>
 
 #include "leveldb/env.h"
 #include "leveldb/iterator.h"
@@ -321,50 +323,268 @@ void DBIter::SeekToLast() {
 
 class BlobDBIter : public Iterator {
  public:
-  BlobDBIter(DBIter* dbiter, ValueLogImpl* vlog)
-      : iter_(dbiter), vlog_(vlog), isValueHandle_(false) {}
+  BlobDBIter(DBIter* dbiter, ValueLogImpl* vlog, Env* env,
+             bool prefetch = false, int max_prefetch = 16)
+      : iter_(dbiter),
+        vlog_(vlog),
+        env_(env),
+        isValueHandle_(false),
+        prefetch_(prefetch),
+        max_prefetch_(max_prefetch),
+        forward_(true),
+        bg_thread_finished_(false),
+        end_(false),
+        cv_(&mutex_),
+        buf_(nullptr) {
+    if (prefetch) {
+      assert(max_prefetch > 0);
+      buf_ = ::operator new(sizeof(std::promise<bool>) * max_prefetch_);
+      /*
+       * 1              dispatch thread (standalone)
+       * max_prefetch   read thread (thread pool)
+       */
+      env_->StartThread(&BGWork, this);
+    }
+  }
   BlobDBIter(const BlobDBIter&) = delete;
   BlobDBIter& operator=(const BlobDBIter&) = delete;
 
-  ~BlobDBIter() override { delete iter_; }
-  bool Valid() const override { return iter_->Valid(); }
+  ~BlobDBIter() override {
+    MutexLock l(&mutex_);
+    if (prefetch_) {
+      closed_ = true;
+      cv_.Signal();
+      while (!bg_thread_finished_) {
+        cv_.Wait();
+      }
+
+      if (current_.isBlob.valid()) {
+        current_.isBlob.wait();
+      }
+      for (auto& item : fetched_) {
+        if (item.isBlob.valid()) {
+          item.isBlob.wait();
+        }
+      }
+
+      fetched_.clear();
+
+      if (buf_) {
+        ::operator delete(buf_);
+      }
+    }
+    delete iter_;
+  }
+  bool Valid() const override {
+    if (prefetch_) {
+      return current_.valid;
+    } else {
+      mutex_.AssertHeld();
+      return iter_->Valid();
+    }
+  }
   Slice key() const override {
-    assert(iter_->Valid());
-    return iter_->key();
+    assert(Valid());
+    if (prefetch_) {
+      return current_.key;
+    } else {
+      mutex_.AssertHeld();
+      return iter_->key();
+    }
   }
   Slice value() const override {
-    assert(iter_->Valid());
-    return isValueHandle_ ? indirect_value_ : iter_->value();
+    assert(Valid());
+    if (prefetch_) {
+      return current_.value;
+    } else {
+      mutex_.AssertHeld();
+      return isValueHandle_ ? indirect_value_ : iter_->value();
+    }
   }
-  Status status() const override { return iter_->status(); }
+
+  Status status() const override {
+    if (prefetch_) {
+      MutexLock l(&mutex_);
+      return current_.status;
+    }
+    mutex_.AssertHeld();
+    return iter_->status();
+  }
 
   void Next() override {
-    iter_->Next();
-    MaybeIndirectValue();
+    if (prefetch_) {
+      if (finished_.empty() || !forward_) {
+        /*
+         * There's no finished results, we need to reap from the prefetch queue,
+         * OR, the iteration direction has changed, we need to clear the
+         * prefetch queue.
+         */
+        MutexLock l(&mutex_);
+        GetFromPrefetched(true);
+      } else {
+        current_ = std::move(finished_.front());
+        finished_.pop_front();
+      }
+    } else {
+      mutex_.AssertHeld();
+      iter_->Next();
+      MaybeIndirectValue();
+    }
   }
 
   void Prev() override {
-    iter_->Prev();
-    MaybeIndirectValue();
+    assert(Valid());
+    if (prefetch_) {
+      if (finished_.empty() || forward_) {
+        /*
+         * There's no finished results, we need to reap from the prefetch queue,
+         * OR, the iteration direction has changed, we need to clear the
+         * prefetch queue.
+         */
+        MutexLock l(&mutex_);
+        GetFromPrefetched(false);
+      } else {
+        current_ = std::move(finished_.front());
+        finished_.pop_front();
+      }
+    } else {
+      mutex_.AssertHeld();
+      iter_->Prev();
+      MaybeIndirectValue();
+    }
   }
 
   void Seek(const Slice& target) override {
+    MutexLock l(&mutex_);
     iter_->Seek(target);
-    MaybeIndirectValue();
+    if (!prefetch_) {
+      MaybeIndirectValue();
+    } else {
+      end_ = false;
+      WaitAndClear();
+      GetFromPrefetched(forward_);
+    }
   }
 
   void SeekToFirst() override {
+    MutexLock l(&mutex_);
     iter_->SeekToFirst();
-    MaybeIndirectValue();
+    if (!prefetch_) {
+      MaybeIndirectValue();
+    } else {
+      end_ = false;
+      WaitAndClear();
+      GetFromPrefetched(forward_);
+    }
   }
 
   void SeekToLast() override {
+    MutexLock l(&mutex_);
     iter_->SeekToLast();
-    MaybeIndirectValue();
+    if (!prefetch_) {
+      MaybeIndirectValue();
+    } else {
+      end_ = false;
+      WaitAndClear();
+      GetFromPrefetched(forward_);
+    }
   }
 
  private:
+  struct Item {  // information kept for a prefetch
+    Item() = default;
+    Item(const Item&) = delete;
+    Item& operator=(const Item&) = delete;
+    Item(Item&& moved) noexcept
+        : key(std::move(moved.key)),
+          value(std::move(moved.value)),
+          isBlob(std::move(moved.isBlob)),
+          status(std::move(moved.status)),
+          valid(moved.valid),
+          forward(moved.forward) {}
+
+    Item& operator=(Item&& moved) noexcept {
+      if (this != &moved) {
+        valid = moved.valid;
+        forward = moved.forward;
+        status = std::move(moved.status);
+        key = std::move(moved.key);
+        value = std::move(moved.value);
+        isBlob = std::move(moved.isBlob);
+      }
+      return *this;
+    }
+
+    std::string key;
+    std::string value;
+    Status status;
+    std::future<bool> isBlob;
+    bool forward;
+    bool valid;
+  };
+
+  void GetFromPrefetched(bool forward) EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
+    mutex_.AssertHeld();
+    while (true) {
+      if (forward_ == forward) {
+        while (!end_ && fetched_.empty()) {
+          cv_.Wait();
+        }
+
+        if (fetched_.empty()) {
+          assert(!Valid());
+          return;
+        }
+
+        if (fetched_.front().isBlob.valid()) fetched_.front().isBlob.get();
+        current_ = std::move(fetched_.front());
+        fetched_.pop_front();
+
+        // batch reap
+        // TODO(optimize): size based batch reap
+        for (auto&& item : fetched_) {
+          if (item.isBlob.valid()) {
+            item.isBlob.get();
+          }
+          finished_.emplace_back(std::move(item));
+        }
+        fetched_.clear();
+
+        cv_.Signal();
+        return;
+      } else {  // change direction
+        ChangeDirection();
+        cv_.Signal();
+      }
+    }
+  }
+
+  void WaitAndClear() EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
+    mutex_.AssertHeld();
+    for (auto& item : fetched_) {
+      if (item.isBlob.valid()) {
+        item.isBlob.wait();
+      }
+    }
+    finished_.clear();
+    fetched_.clear();
+  }
+
+  void ChangeDirection() EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
+    mutex_.AssertHeld();
+    iter_->Seek(current_.key);
+    forward_ = !forward_;
+    end_ = false;
+    if (forward_) {
+      iter_->Next();
+    } else {
+      iter_->Prev();
+    }
+    WaitAndClear();
+  }
+
   void MaybeIndirectValue() {
+    mutex_.AssertHeld();
     if (iter_->Valid() && iter_->valueType() == kTypeValueHandle) {
       ValueHandle handle;
       Slice input(iter_->value());
@@ -376,10 +596,94 @@ class BlobDBIter : public Iterator {
     }
   }
 
-  DBIter* iter_;
+  static void BGWork(void* arg) {
+    reinterpret_cast<BlobDBIter*>(arg)->BGPrefetch();
+  }
+
+  void BGPrefetch() {
+    while (true) {
+      MutexLock l(&mutex_);
+
+      while (!closed_ && iter_->Valid() && fetched_.size() >= max_prefetch_) {
+        cv_.Wait();
+      }
+
+      if (closed_) {
+        bg_thread_finished_ = true;
+        cv_.Signal();
+        break;
+      }
+
+      while (fetched_.size() < max_prefetch_) {
+        fetched_.emplace_back();
+        Item& item = fetched_.back();
+        item.forward = forward_;
+
+        if (!iter_->Valid()) {
+          end_ = true;
+          item.valid = false;
+          item.status = iter_->status();
+          break;
+        }
+
+        // TODO(optimize): use placement new to avoid frequent small allocation
+        auto* p = new std::promise<bool>;
+
+        item.valid = true;
+        item.key.assign(iter_->key().data(), iter_->key().size());
+        item.value.assign(iter_->value().data(), iter_->value().size());
+        item.isBlob = p->get_future();
+        if (iter_->valueType() != kTypeValueHandle) {
+          p->set_value(false);
+          delete p;
+        } else {
+          auto task =
+              +[](Item* arg, ValueLogImpl* vlog, std::promise<bool>* p) {
+                Item* item = reinterpret_cast<Item*>(arg);
+                ValueHandle handle;
+                Slice input(item->value);
+                handle.DecodeFrom(&input);
+                item->status = vlog->Get(ReadOptions(), handle, &item->value);
+                if (!item->status.ok()) {
+                  item->valid = false;
+                }
+                p->set_value(true);
+                delete p;
+              };
+          env_->SubmitJob(std::bind(task, &item, vlog_, p));
+        }
+
+        if (forward_) {
+          iter_->Next();
+        } else {
+          iter_->Prev();
+        }
+      }
+
+      cv_.Signal();
+    }
+  }
+
+  Env* const env_;
+  DBIter* iter_ GUARDED_BY(mutex_);
   ValueLogImpl* vlog_;
+  mutable Item current_;
   std::string indirect_value_;
   bool isValueHandle_;
+
+  bool prefetch_;
+  bool closed_ GUARDED_BY(mutex_);
+  bool end_
+      GUARDED_BY(mutex_);  // whether the prefetch thread hit an !iter_->Valid()
+  bool forward_;           // iterate direction
+  bool bg_thread_finished_ GUARDED_BY(mutex_);
+  int max_prefetch_;
+
+  mutable port::Mutex mutex_;
+  port::CondVar cv_ GUARDED_BY(mutex_);
+  std::deque<Item> fetched_ GUARDED_BY(mutex_);
+  std::deque<Item> finished_;
+  void* buf_;
 };
 
 }  // anonymous namespace
@@ -390,13 +694,13 @@ Iterator* NewDBIterator(DBImpl* db, const Comparator* user_key_comparator,
   return new DBIter(db, user_key_comparator, internal_iter, sequence, seed);
 }
 
-Iterator* NewBlobDBIterator(DBImpl* db, ValueLogImpl* vlog,
+Iterator* NewBlobDBIterator(DBImpl* db, ValueLogImpl* vlog, Env* env,
                             const Comparator* user_key_comparator,
                             Iterator* internal_iter, SequenceNumber sequence,
-                            uint32_t seed) {
+                            uint32_t seed, bool prefetch, int max_prefetch) {
   DBIter* dbiter =
       new DBIter(db, user_key_comparator, internal_iter, sequence, seed);
-  return new BlobDBIter(dbiter, vlog);
+  return new BlobDBIter(dbiter, vlog, env, prefetch, max_prefetch);
 }
 
 }  // namespace leveldb

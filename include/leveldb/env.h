@@ -15,6 +15,7 @@
 
 #include <cstdarg>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -208,6 +209,10 @@ class LEVELDB_EXPORT Env {
   // I.e., the caller may not assume that background work items are
   // serialized.
   virtual void Schedule(void (*function)(void* arg), void* arg) = 0;
+
+  virtual void SubmitJob(const std::function<void()>& job) = 0;
+
+  virtual void SubmitJob(std::function<void()>&& job) = 0;
 
   // Set the max number of bg threads in thread pool.
   virtual void SetPoolBackgroundThreads(int num) = 0;
@@ -435,6 +440,14 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
 
   void Schedule(void (*f)(void*), void* a) override {
     return target_->Schedule(f, a);
+  }
+
+  void SubmitJob(const std::function<void()>& job) override {
+    return target_->SubmitJob(job);
+  }
+
+  void SubmitJob(std::function<void()>&& job) override {
+    return target_->SubmitJob(job);
   }
 
   void SetPoolBackgroundThreads(int num) override {

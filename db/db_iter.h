@@ -22,10 +22,10 @@ Iterator* NewDBIterator(DBImpl* db, const Comparator* user_key_comparator,
                         Iterator* internal_iter, SequenceNumber sequence,
                         uint32_t seed);
 
-Iterator* NewBlobDBIterator(DBImpl* db, ValueLogImpl* vlog,
+Iterator* NewBlobDBIterator(DBImpl* db, ValueLogImpl* vlog, Env* env,
                             const Comparator* user_key_comparator,
                             Iterator* internal_iter, SequenceNumber sequence,
-                            uint32_t seed);
+                            uint32_t seed, bool prefetch, int max_prefetch);
 
 }  // namespace leveldb
 

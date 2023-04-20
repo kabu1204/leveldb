@@ -42,6 +42,97 @@ uint64_t SizeOf(const Slice& key, const Slice& val) {
          key.size() + val.size();
 }
 
+TEST(VLOG_TEST, DBWrapperPrefetchIter) {
+  Options options;
+  Status s;
+  options.env->NewStdLogger(&options.info_log);
+  options.create_if_missing = true;
+  options.max_vlog_file_size = 8 << 20;
+  options.blob_db = true;
+  options.vlog_value_size_threshold = 512;
+  options.blob_background_read_threads = 16;
+  std::string dbname("testdb");
+  std::string value;
+  CleanDir(options.env, dbname);
+  int num_entries = 400000;
+  int reverse0 = 234567;
+  int reverse1 = 123456;
+
+  int fill = std::to_string(num_entries).size();
+
+  DBWrapper* db;
+  DBWrapper::Open(options, dbname, &db);
+
+  std::map<std::string, std::string> kvmap;
+  std::random_device rd;
+  std::mt19937 mt(rd());
+  std::uniform_int_distribution<int> dist(1024, 2048);
+  for (int i = 0; i < num_entries; ++i) {
+    std::string n = std::to_string(i);
+    std::string key = "key" + std::string(fill - n.size(), '0') + n;
+    key = std::to_string(std::hash<std::string>{}(key));
+    std::string val = "value" + std::string(dist(mt), 'x');
+    kvmap[key] = val;
+    s = db->Put(WriteOptions(), key, val);
+    ASSERT_TRUE(s.ok());
+  }
+
+  ReadOptions opt;
+  opt.blob_prefetch = false;
+  Iterator* iter = db->NewIterator(opt);
+  auto it = kvmap.begin();
+  int d = 0;
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next(), it++) {
+    Slice key = iter->key();
+    Slice val = iter->value();
+    ASSERT_EQ(it->first, key.ToString());
+    ASSERT_EQ(it->second, val);
+    d++;
+    if (d == reverse0) {
+      break;
+    }
+  }
+
+  for (; iter->Valid(); iter->Prev(), it = std::prev(it)) {
+    Slice key = iter->key();
+    Slice val = iter->value();
+    ASSERT_EQ(it->first, key.ToString());
+    ASSERT_EQ(it->second, val);
+    d--;
+    if (d == reverse1) {
+      break;
+    }
+  }
+
+  for (; iter->Valid(); iter->Next(), it++) {
+    Slice key = iter->key();
+    Slice val = iter->value();
+    ASSERT_EQ(it->first, key.ToString());
+    ASSERT_EQ(it->second, val);
+    d++;
+  }
+
+  ASSERT_EQ(d, num_entries);
+
+  auto reverse_it = kvmap.rbegin();
+  d = 0;
+  for (iter->SeekToLast(); iter->Valid(); iter->Prev(), reverse_it++) {
+    Slice key = iter->key();
+    Slice val = iter->value();
+    ASSERT_EQ(reverse_it->first, key.ToString());
+    ASSERT_EQ(reverse_it->second, val);
+    d++;
+  }
+  ASSERT_EQ(d, num_entries);
+
+  printf("%d\n", d);
+
+  delete iter;
+  delete db;
+
+  CleanDir(options.env, dbname);
+}
+
 TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
   Options options;
   Status s;

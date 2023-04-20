@@ -887,6 +887,10 @@ class PosixEnv : public Env {
   void Schedule(void (*background_work_function)(void* background_work_arg),
                 void* background_work_arg) override;
 
+  void SubmitJob(const std::function<void()>& job) override;
+
+  void SubmitJob(std::function<void()>&& job) override;
+
   void SetPoolBackgroundThreads(int num) override;
 
   int GetPoolBackgroundThreads() override;
@@ -995,6 +999,14 @@ void PosixEnv::Schedule(
     void (*background_work_function)(void* background_work_arg),
     void* background_work_arg) {
   thread_pool_.Schedule(background_work_function, background_work_arg);
+}
+
+void PosixEnv::SubmitJob(const std::function<void()>& job) {
+  thread_pool_.SubmitJob(job);
+}
+
+void PosixEnv::SubmitJob(std::function<void()>&& job) {
+  thread_pool_.SubmitJob(std::move(job));
 }
 
 // Set the max number of bg threads in thread pool.
