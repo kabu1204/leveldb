@@ -94,8 +94,10 @@ class SyncPoint {
   } while (0);
 #else
 #define TEST_SYNC_POINT(name)
+#define TEST_SYNC_POINT_MAY_RETURN(name, ret)
 #define TEST_SYNC_POINT_CALLBACK(name, cb)
 #define TEST_SYNC_POINT_ARG(name, arg)
+#define TEST_SYNC_POINT_CLEAR(name)
 #endif
 
 }  // namespace test
