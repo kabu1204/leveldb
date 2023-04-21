@@ -18,6 +18,8 @@ Authors: Sanjay Ghemawat (sanjay@google.com) and Jeff Dean (jeff@google.com)
 This repo is forked from LevelDB 1.23 to support BlobDB, based on
 the paper [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf).
 
+BlobDB does **NOT SUPPORT Windows**.
+
 ## Implementation details
 
 See [doc/blobdb_impl.md](./doc/blobdb_impl.md)
