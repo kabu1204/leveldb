@@ -141,29 +141,35 @@ struct LEVELDB_EXPORT Options {
   // NewBloomFilterPolicy() here.
   const FilterPolicy* filter_policy = nullptr;
 
-  // If true, separate key-value pairs:
-  //  1. store value in ValueLogImpl
-  //  2. store <key, ValueHandle> in LSMTree
-  bool blob_db = false;
+  // Soft limit of vlog file size
+  // Default: 64MB
+  size_t blob_max_file_size = 64 << 20;
 
-  // soft limit of vlog file size
-  size_t max_vlog_file_size = 32 << 20;
+  // Max opened vlog files
+  // Default: 1000
+  size_t blob_max_open_files = 1000;
 
-  // max opened vlog files
-  size_t max_open_vlogs = 1000;
+  // Value size threshold to enter vlog file
+  // Default: 1KB
+  size_t blob_value_size_threshold = 1024;
 
-  size_t max_entries_per_vlog = 100000;
-
-  size_t vlog_value_size_threshold = 1024;
-
-  // 0-100
+  // Minimum ratio of the size of expired records
+  // to rewrite vlog file when GC.
+  // Default: 50%
   int blob_gc_size_discard_threshold = 50;
 
-  // 0-100
+  // Minimum ratio of the number of expired records
+  // to rewrite vlog file when GC.
+  // Default: 50%
   int blob_gc_num_discard_threshold = 50;
 
-  int blob_gc_interval = 600;  // 10min
+  // BlobDB will select a vlog file for GC
+  // every blob_gc_interval seconds
+  // Default: 600s
+  int blob_gc_interval = 600;
 
+  // Number of background read threads for concurrent prefetch during iteration
+  // Default: 8
   int blob_background_read_threads = 8;
 };
 
@@ -177,6 +183,7 @@ struct LEVELDB_EXPORT ReadOptions {
   // Callers may wish to set this field to false for bulk scans.
   bool fill_cache = true;
 
+  // If true, background concurrent prefetch for BlobDBIterator
   bool blob_prefetch = true;
 
   // If "snapshot" is non-null, read as of the supplied snapshot

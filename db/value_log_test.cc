@@ -47,10 +47,9 @@ TEST(VLOG_TEST, DBWrapperPrefetchIter) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 512;
-  options.blob_background_read_threads = 16;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 512;
+  options.blob_background_read_threads = 8;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -78,7 +77,7 @@ TEST(VLOG_TEST, DBWrapperPrefetchIter) {
   }
 
   ReadOptions opt;
-  opt.blob_prefetch = false;
+  opt.blob_prefetch = true;
   Iterator* iter = db->NewIterator(opt);
   auto it = kvmap.begin();
   int d = 0;
@@ -125,8 +124,6 @@ TEST(VLOG_TEST, DBWrapperPrefetchIter) {
   }
   ASSERT_EQ(d, num_entries);
 
-  printf("%d\n", d);
-
   delete iter;
   delete db;
 
@@ -138,9 +135,8 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -167,7 +163,7 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
-    if (size <= options.max_vlog_file_size) {
+    if (size <= options.blob_max_file_size) {
       rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
@@ -245,9 +241,8 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -274,7 +269,7 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
-    if (size <= options.max_vlog_file_size) {
+    if (size <= options.blob_max_file_size) {
       rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
@@ -361,9 +356,8 @@ TEST(VLOG_TEST, DBWrapperAutoGC) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   options.blob_gc_interval = 2;
   std::string dbname("testdb");
   std::string value;
@@ -395,7 +389,7 @@ TEST(VLOG_TEST, DBWrapperAutoGC) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
-    if (size <= 3 * options.max_vlog_file_size) {
+    if (size <= 3 * options.blob_max_file_size) {
       rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
@@ -453,9 +447,8 @@ TEST(VLOG_TEST, DBWrapperGCAsync) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   port::RWMutex rwlock;
@@ -483,7 +476,7 @@ TEST(VLOG_TEST, DBWrapperGCAsync) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
-    if (size <= options.max_vlog_file_size) {
+    if (size <= options.blob_max_file_size) {
       rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
@@ -575,9 +568,8 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -604,7 +596,7 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
-    if (size <= options.max_vlog_file_size) {
+    if (size <= options.blob_max_file_size) {
       rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
@@ -707,9 +699,8 @@ TEST(VLOG_TEST, DBWrapperManualGCSync) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -736,7 +727,7 @@ TEST(VLOG_TEST, DBWrapperManualGCSync) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(256, 'x');
     kvmap[key] = val;
-    if (size <= options.max_vlog_file_size) {
+    if (size <= options.blob_max_file_size) {
       rewrites.emplace_back(key);
       size += SizeOf(key, val);
     }
@@ -880,9 +871,8 @@ TEST(VLOG_TEST, DBWrapperIterator) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -898,7 +888,7 @@ TEST(VLOG_TEST, DBWrapperIterator) {
   std::random_device rd;
   std::mt19937 mt(rd());
   std::uniform_int_distribution<int> dist(
-      1, 2 * options.vlog_value_size_threshold);
+      1, 2 * options.blob_value_size_threshold);
   for (int i = 0; i < num_ondisk_batches; ++i) {
     WriteBatch batch;
     for (int j = 0; j < per_batch; ++j) {
@@ -960,9 +950,8 @@ TEST(VLOG_TEST, DBWrapperWriteBatch) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -978,7 +967,7 @@ TEST(VLOG_TEST, DBWrapperWriteBatch) {
   std::random_device rd;
   std::mt19937 mt(rd());
   std::uniform_int_distribution<int> dist(
-      1, 2 * options.vlog_value_size_threshold);
+      1, 2 * options.blob_value_size_threshold);
   for (int i = 0; i < num_ondisk_batches; ++i) {
     WriteBatch batch;
     for (int j = 0; j < per_batch; ++j) {
@@ -1023,9 +1012,8 @@ TEST(VLOG_TEST, DBWrapperNoGC) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
-  options.blob_db = true;
-  options.vlog_value_size_threshold = 256;
+  options.blob_max_file_size = 8 << 20;
+  options.blob_value_size_threshold = 256;
   std::string dbname("testdb");
   std::string value;
   CleanDir(options.env, dbname);
@@ -1052,7 +1040,7 @@ TEST(VLOG_TEST, DBWrapperNoGC) {
   std::random_device rd;
   std::mt19937 mt(rd());
   std::uniform_int_distribution<int> dist(
-      1, 2 * options.vlog_value_size_threshold);
+      1, 2 * options.blob_value_size_threshold);
   for (int i = 0; i < num_ondisk_entries; ++i) {
     std::string key = "key" + std::to_string(i);
     std::string val = "value" + std::string(dist(mt), 'x');
@@ -1094,7 +1082,7 @@ TEST(VLOG_TEST, ValueLogRecover) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
+  options.blob_max_file_size = 8 << 20;
   std::string dbname("testdb");
   CleanDir(options.env, dbname);
 
@@ -1144,7 +1132,7 @@ TEST(VLOG_TEST, ValueLogRecover) {
 
   uint32_t size = 72;
   uint32_t num_entries = 6;
-  for (int i = 0; size <= options.max_vlog_file_size / 2; i++) {
+  for (int i = 0; size <= options.blob_max_file_size / 2; i++) {
     Slice key("k0" + std::to_string(i + 7));
     Slice val("value0" + std::to_string(i + 7));
     v->Put(WriteOptions(), key, val, &handle);
@@ -1197,7 +1185,7 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
   Status s;
   options.env->NewStdLogger(&options.info_log);
   options.create_if_missing = true;
-  options.max_vlog_file_size = 8 << 20;
+  options.blob_max_file_size = 8 << 20;
   std::string dbname("testdb");
 
   DBWrapper* db;

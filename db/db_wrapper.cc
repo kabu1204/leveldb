@@ -22,7 +22,7 @@ class DivideHandler : public WriteBatch::Handler {
   ~DivideHandler() override = default;
 
   void Put(const Slice& key, const Slice& value) override {
-    if (value.size() > threshold) {
+    if (value.size() >= threshold) {
       vb->Put(key, value);
     } else {
       small->Put(key, value);
@@ -97,7 +97,7 @@ Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
                                    ValueBatch* large) {
   assert(input != nullptr && small != nullptr && large != nullptr);
   DivideHandler handler;
-  handler.threshold = options_.vlog_value_size_threshold;
+  handler.threshold = options_.blob_value_size_threshold;
   handler.small = small;
   handler.vb = large;
   Status s = input->Iterate(&handler);
@@ -178,17 +178,34 @@ std::string DBWrapper::DebugString() {
   return result;
 }
 
+static void ReleaseBlobDBIterSnapshot(void* arg1, void* arg2) {
+  reinterpret_cast<DBWrapper*>(arg1)->ReleaseSnapshot(
+      reinterpret_cast<const Snapshot*>(arg2));
+}
+
 Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
+  const Snapshot* snapshot = options.snapshot;
+  if (!snapshot) {
+    // If user doesn't specify snapshot, we have to get a new snapshot.
+    // See comments of DBWrapper::Get.
+    snapshot = GetSnapshot();
+  }
   SequenceNumber latest_snapshot;
   uint32_t seed;
   Iterator* iter = db_->NewInternalIterator(options, &latest_snapshot, &seed);
-  return NewBlobDBIterator(
+  Iterator* blob_iter = NewBlobDBIterator(
       db_, vlog_, options_.env, db_->user_comparator(), iter,
-      (options.snapshot != nullptr
-           ? static_cast<const SnapshotImpl*>(options.snapshot)
-                 ->sequence_number()
-           : latest_snapshot),
-      seed, options.blob_prefetch, options_.blob_background_read_threads);
+      static_cast<const SnapshotImpl*>(snapshot)->sequence_number(), seed,
+      options.blob_prefetch, options_.blob_background_read_threads);
+
+  if (!options.snapshot) {
+    // If user doesn't specify snapshot, we need to release the snapshot we got
+    // above after the iter is deleted.
+    blob_iter->RegisterCleanup(&ReleaseBlobDBIterSnapshot, this,
+                               (void*)(snapshot));
+  }
+
+  return blob_iter;
 }
 
 const Snapshot* DBWrapper::GetSnapshot() { return db_->GetSnapshot(); }
@@ -216,11 +233,17 @@ Status DBWrapper::Open(const Options& options, const std::string& name,
     *dbptr = nullptr;
   }
   Log(options.info_log,
-      "Creating BlobDB, ValueThreshold = %lu\n\t"
-      "VLogFileSize = %lu\n\t"
-      "VLogMaxEntries = %lu",
-      options.vlog_value_size_threshold, options.max_vlog_file_size,
-      options.max_entries_per_vlog);
+      "Creating BlobDB, "
+      "ValueThreshold = %lu\n\t"
+      "BlobMaxFileSize = %lu\n\t"
+      "BlobGCSizeDiscardThreshold = %d\n\t"
+      "BlobGCNumDiscardThreshold = %d\n\t"
+      "BlobGCInterval = %d\n\t"
+      "BlobBackgroundReadThreads = %d",
+      options.blob_value_size_threshold, options.blob_max_file_size,
+      options.blob_gc_size_discard_threshold,
+      options.blob_gc_num_discard_threshold, options.blob_gc_interval,
+      options.blob_background_read_threads);
   Status s;
   DB* db;
   s = DB::Open(options, name, &db);

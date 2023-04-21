@@ -20,7 +20,7 @@ ValueLogImpl::ValueLogImpl(const Options& options, const std::string& dbname,
       db_(reinterpret_cast<DBImpl*>(db)),
       options_(options),
       dbname_(dbname),
-      vlog_cache_(new VLogCache(dbname_, options, options.max_open_vlogs)),
+      vlog_cache_(new VLogCache(dbname_, options, options.blob_max_open_files)),
       shutdown_(false),
       rwfile_(nullptr),
       manifest_file_(nullptr),
@@ -50,7 +50,7 @@ Status ValueLogImpl::Write(const WriteOptions& options, ValueBatch* batch) {
   if (options.sync) {
     rwfile_->Sync();
   }
-  if (rwfile_->FileSize() > options_.max_vlog_file_size) {
+  if (rwfile_->FileSize() > options_.blob_max_file_size) {
     WriteLock l(&rwlock_);
     s = FinishBuild();
   }
@@ -301,7 +301,7 @@ Status ValueLogImpl::Recover() {
     std::string filename(VLogFileName(dbname_, latest_rw_file));
     ValidateAndTruncate(latest_rw_file, &offset, &num_entries, &file_size);
 
-    if (offset <= (options_.max_vlog_file_size / 2)) {
+    if (offset <= (options_.blob_max_file_size / 2)) {
       /*
        * reuse the .vlog file
        */
