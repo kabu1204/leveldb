@@ -221,7 +221,7 @@ class LEVELDB_EXPORT Env {
   virtual int GetPoolBackgroundThreads() = 0;
 
   // Wait for all jobs to complete and join all background threads
-  virtual void WaitForJoin() = 0;
+  virtual void WaitForCompleteAndJoinAll() = 0;
 
   // Start a new thread, invoking "function(arg)" within the new thread.
   // When "function(arg)" returns, the thread will be destroyed.
@@ -458,7 +458,9 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
     return target_->GetPoolBackgroundThreads();
   }
 
-  void WaitForJoin() override { target_->WaitForJoin(); }
+  void WaitForCompleteAndJoinAll() override {
+    target_->WaitForCompleteAndJoinAll();
+  }
 
   void StartThread(void (*f)(void*), void* a) override {
     return target_->StartThread(f, a);

@@ -7,12 +7,15 @@
 namespace leveldb {
 
 void ThreadPoolImpl::JoinAll(bool wait_complete) {
-  MutexLock l(&mutex_);
+  mutex_.Lock();
   assert(!exit_all_);
 
   exit_all_ = true;
   wait_complete_exit_all_ = wait_complete;
+
   cv_.SignalAll();
+
+  mutex_.Unlock();
 
   for (auto& th : threads_) {
     th.join();

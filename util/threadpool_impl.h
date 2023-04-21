@@ -76,10 +76,10 @@ class ThreadPoolImpl : public ThreadPool {
   int max_bg_threads_ GUARDED_BY(mutex_);
   int num_waiting_threads_ GUARDED_BY(mutex_);
   std::deque<std::function<void()>> jobs_ GUARDED_BY(mutex_);
-  std::vector<std::thread> threads_ GUARDED_BY(mutex_);
+  std::vector<std::thread> threads_;
   std::atomic<size_t> num_jobs;
-  bool exit_all_ GUARDED_BY(mutex_);
-  bool wait_complete_exit_all_ GUARDED_BY(mutex_);
+  bool exit_all_;
+  bool wait_complete_exit_all_;
 };
 
 }  // namespace leveldb

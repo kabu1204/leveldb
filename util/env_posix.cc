@@ -895,7 +895,7 @@ class PosixEnv : public Env {
 
   int GetPoolBackgroundThreads() override;
 
-  void WaitForJoin() override;
+  void WaitForCompleteAndJoinAll() override;
 
   void StartThread(void (*thread_main)(void* thread_main_arg),
                    void* thread_main_arg) override {
@@ -1019,7 +1019,9 @@ int PosixEnv::GetPoolBackgroundThreads() {
   return thread_pool_.GetBackgroundThreads();
 }
 
-void PosixEnv::WaitForJoin() { thread_pool_.WaitForJobsAndJoinAllThreads(); }
+void PosixEnv::WaitForCompleteAndJoinAll() {
+  thread_pool_.WaitForJobsAndJoinAllThreads();
+}
 
 namespace {
 

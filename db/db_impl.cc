@@ -186,6 +186,8 @@ DBImpl::~DBImpl() {
   }
   mutex_.Unlock();
 
+  env_->WaitForCompleteAndJoinAll();
+
   if (db_lock_ != nullptr) {
     env_->UnlockFile(db_lock_);
   }

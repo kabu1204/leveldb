@@ -63,8 +63,8 @@ Status ValueLogImpl::Open(const Options& options, const std::string& dbname,
 }
 
 DBWrapper::~DBWrapper() {
-  delete db_;
   delete vlog_;
+  delete db_;
 }
 
 Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates) {
