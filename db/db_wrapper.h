@@ -19,15 +19,15 @@ namespace leveldb {
 class ValueLogImpl;
 class ValueBatch;
 
-class DBWrapper : public DB {
+class BlobDB : public DB {
  public:
   static Status Open(const Options& options, const std::string& name,
-                     DBWrapper** dbptr);
+                     BlobDB** dbptr);
 
-  DBWrapper(const DBWrapper&) = delete;
-  DBWrapper& operator=(const DBWrapper&) = delete;
+  BlobDB(const BlobDB&) = delete;
+  BlobDB& operator=(const BlobDB&) = delete;
 
-  ~DBWrapper() override;
+  ~BlobDB() override;
 
   Status Put(const WriteOptions& options, const Slice& key,
              const Slice& value) override;
@@ -75,10 +75,8 @@ class DBWrapper : public DB {
  private:
   friend class DB;
   friend class ValueLogImpl;
-  struct Writer;
 
-  DBWrapper(const Options& options, std::string dbname, DB* db,
-            ValueLogImpl* vlog)
+  BlobDB(const Options& options, std::string dbname, DB* db, ValueLogImpl* vlog)
       : db_(reinterpret_cast<DBImpl*>(db)),
         vlog_(vlog),
         options_(options),

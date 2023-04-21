@@ -182,7 +182,7 @@ class ValueLogImpl {
   void RemoveObsoleteFiles() EXCLUSIVE_LOCKS_REQUIRED(rwlock_);
 
  private:
-  friend class DBWrapper;
+  friend class BlobDB;
 
   Status GetLocked(const ReadOptions& options, VLogRWFile* rwfile,
                    const ValueHandle& handle, std::string* value)

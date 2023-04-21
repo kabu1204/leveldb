@@ -36,18 +36,6 @@ class DivideHandler : public WriteBatch::Handler {
   WriteBatch* small;
 };
 
-// Information kept for every waiting writer
-struct DBWrapper::Writer {
-  explicit Writer(port::Mutex* mu)
-      : batch(nullptr), sync(false), done(false), cv(mu) {}
-
-  Status status;
-  WriteBatch* batch;
-  bool sync;
-  bool done;
-  port::CondVar cv;
-};
-
 Status ValueLogImpl::Open(const Options& options, const std::string& dbname,
                           DB* db, ValueLogImpl** vlog) {
   assert(db != nullptr);
@@ -62,17 +50,17 @@ Status ValueLogImpl::Open(const Options& options, const std::string& dbname,
   return Status::OK();
 }
 
-DBWrapper::~DBWrapper() {
+BlobDB::~BlobDB() {
   delete vlog_;
   delete db_;
 }
 
-Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates) {
+Status BlobDB::Write(const WriteOptions& options, WriteBatch* updates) {
   return Write(options, updates, nullptr);
 }
 
-Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates,
-                        WriteCallback* callback) {
+Status BlobDB::Write(const WriteOptions& options, WriteBatch* updates,
+                     WriteCallback* callback) {
   // TODO batching the updates;
   Status s;
   WriteBatch small;
@@ -93,8 +81,8 @@ Status DBWrapper::Write(const WriteOptions& options, WriteBatch* updates,
   return s;
 }
 
-Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
-                                   ValueBatch* large) {
+Status BlobDB::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
+                                ValueBatch* large) {
   assert(input != nullptr && small != nullptr && large != nullptr);
   DivideHandler handler;
   handler.threshold = options_.blob_value_size_threshold;
@@ -120,8 +108,8 @@ Status DBWrapper::DivideWriteBatch(WriteBatch* input, WriteBatch* small,
  * <R_PTR> and <R_VLOG>. We address this issue without extra synchronization,
  * see comments below.
  */
-Status DBWrapper::Get(const ReadOptions& options, const Slice& key,
-                      std::string* value) {
+Status BlobDB::Get(const ReadOptions& options, const Slice& key,
+                   std::string* value) {
   ValueType valueType;
   Status s = db_->Get(options, key, value, &valueType);
   if (!s.ok() || valueType != kTypeValueHandle) {
@@ -161,16 +149,16 @@ Status DBWrapper::Get(const ReadOptions& options, const Slice& key,
   return s;
 }
 
-Status DBWrapper::Put(const WriteOptions& options, const Slice& key,
-                      const Slice& val) {
+Status BlobDB::Put(const WriteOptions& options, const Slice& key,
+                   const Slice& val) {
   return DB::Put(options, key, val);
 }
 
-Status DBWrapper::Delete(const WriteOptions& options, const Slice& key) {
+Status BlobDB::Delete(const WriteOptions& options, const Slice& key) {
   return DB::Delete(options, key);
 }
 
-std::string DBWrapper::DebugString() {
+std::string BlobDB::DebugString() {
   std::string result;
   db_->GetProperty("leveldb.stats", &result);
   result += "\n";
@@ -179,11 +167,11 @@ std::string DBWrapper::DebugString() {
 }
 
 static void ReleaseBlobDBIterSnapshot(void* arg1, void* arg2) {
-  reinterpret_cast<DBWrapper*>(arg1)->ReleaseSnapshot(
+  reinterpret_cast<BlobDB*>(arg1)->ReleaseSnapshot(
       reinterpret_cast<const Snapshot*>(arg2));
 }
 
-Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
+Iterator* BlobDB::NewIterator(const ReadOptions& options) {
   const Snapshot* snapshot = options.snapshot;
   if (!snapshot) {
     // If user doesn't specify snapshot, we have to get a new snapshot.
@@ -208,27 +196,26 @@ Iterator* DBWrapper::NewIterator(const ReadOptions& options) {
   return blob_iter;
 }
 
-const Snapshot* DBWrapper::GetSnapshot() { return db_->GetSnapshot(); }
+const Snapshot* BlobDB::GetSnapshot() { return db_->GetSnapshot(); }
 
-void DBWrapper::ReleaseSnapshot(const Snapshot* snapshot) {
+void BlobDB::ReleaseSnapshot(const Snapshot* snapshot) {
   db_->ReleaseSnapshot(snapshot);
 }
 
-bool DBWrapper::GetProperty(const Slice& property, std::string* value) {
+bool BlobDB::GetProperty(const Slice& property, std::string* value) {
   return db_->GetProperty(property, value);
 }
 
-void DBWrapper::GetApproximateSizes(const Range* range, int n,
-                                    uint64_t* sizes) {
+void BlobDB::GetApproximateSizes(const Range* range, int n, uint64_t* sizes) {
   db_->GetApproximateSizes(range, n, sizes);
 }
 
-void DBWrapper::CompactRange(const Slice* begin, const Slice* end) {
+void BlobDB::CompactRange(const Slice* begin, const Slice* end) {
   db_->CompactRange(begin, end);
 }
 
-Status DBWrapper::Open(const Options& options, const std::string& name,
-                       DBWrapper** dbptr) {
+Status BlobDB::Open(const Options& options, const std::string& name,
+                    BlobDB** dbptr) {
   if (dbptr != nullptr) {
     *dbptr = nullptr;
   }
@@ -259,28 +246,28 @@ Status DBWrapper::Open(const Options& options, const std::string& name,
   options.env->SetPoolBackgroundThreads(
       options.blob_background_read_threads + 1 +
       options.env->GetPoolBackgroundThreads());
-  DBWrapper* dbWrapper = new DBWrapper(options, name, db, vlog);
+  BlobDB* dbWrapper = new BlobDB(options, name, db, vlog);
   if (dbptr != nullptr) {
     *dbptr = dbWrapper;
   }
   return s;
 }
 
-void DBWrapper::ManualGC(uint64_t number) { vlog_->ManualGC(number); }
+void BlobDB::ManualGC(uint64_t number) { vlog_->ManualGC(number); }
 
-Status DBWrapper::VLogBGError() {
+Status BlobDB::VLogBGError() {
   MutexLock l(&vlog_->mutex_);
   return vlog_->bg_error_;
 }
 
-Status DBWrapper::SyncLSM() { return db_->Sync(); }
+Status BlobDB::SyncLSM() { return db_->Sync(); }
 
-void DBWrapper::RemoveObsoleteBlob() {
+void BlobDB::RemoveObsoleteBlob() {
   WriteLock l(&vlog_->rwlock_);
   vlog_->RemoveObsoleteFiles();
 }
 
-void DBWrapper::WaitVLogGC() {
+void BlobDB::WaitVLogGC() {
   MutexLock l(&vlog_->mutex_);
   while (vlog_->bg_garbage_collection_) {
     vlog_->bg_work_cv_.Wait();

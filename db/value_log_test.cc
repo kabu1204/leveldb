@@ -59,8 +59,8 @@ TEST(VLOG_TEST, DBWrapperPrefetchIter) {
 
   int fill = std::to_string(num_entries).size();
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::map<std::string, std::string> kvmap;
   std::random_device rd;
@@ -142,8 +142,8 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
   CleanDir(options.env, dbname);
   int num_entries = 100000;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
   std::vector<std::string> rewrites;
@@ -189,12 +189,12 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
   }
 
   struct sync_point_arg {
-    DBWrapper* db;
+    BlobDB* db;
     std::unordered_map<std::string, std::string>* kvs;
   };
   sync_point_arg myarg = {.db = db, .kvs = &kvmap};
   auto sync_point_cb = +[](void* arg) {
-    DBWrapper* db = reinterpret_cast<sync_point_arg*>(arg)->db;
+    BlobDB* db = reinterpret_cast<sync_point_arg*>(arg)->db;
     auto* kvmap = reinterpret_cast<sync_point_arg*>(arg)->kvs;
     std::string value;
     Status s;
@@ -220,18 +220,18 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterLSMRewrite) {
   ASSERT_TRUE(db->VLogBGError().ok());
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   // Put one more record to expire the old vlog file
   db->Put(WriteOptions(), "OneMoreKey", "value");
   db->RemoveObsoleteBlob();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   validate_fn();
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -248,8 +248,8 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
   CleanDir(options.env, dbname);
   int num_entries = 100000;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
   std::vector<std::string> rewrites;
@@ -295,12 +295,12 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
   }
 
   struct sync_point_arg {
-    DBWrapper* db;
+    BlobDB* db;
     std::unordered_map<std::string, std::string>* kvs;
   };
   sync_point_arg myarg = {.db = db, .kvs = &kvmap};
   auto sync_point_cb = +[](void* arg) {
-    DBWrapper* db = reinterpret_cast<sync_point_arg*>(arg)->db;
+    BlobDB* db = reinterpret_cast<sync_point_arg*>(arg)->db;
     auto* kvmap = reinterpret_cast<sync_point_arg*>(arg)->kvs;
     std::string value;
     Status s;
@@ -326,7 +326,7 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
   ASSERT_TRUE(db->VLogBGError().ok());
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   validate_fn();
 
@@ -342,11 +342,11 @@ TEST(VLOG_TEST, DBWrapperGC_FailAfterValueRewrite) {
   db->RemoveObsoleteBlob();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   validate_fn();
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -368,8 +368,8 @@ TEST(VLOG_TEST, DBWrapperAutoGC) {
   TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterValueRewrite");
   TEST_SYNC_POINT_CLEAR("GC.Rewrite.AfterLSMRewrite");
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
   std::vector<std::string> rewrites;
@@ -417,7 +417,7 @@ TEST(VLOG_TEST, DBWrapperAutoGC) {
   }
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   std::shuffle(rewrites.begin(), rewrites.end(), g);
   std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -431,13 +431,13 @@ TEST(VLOG_TEST, DBWrapperAutoGC) {
   db->WaitVLogGC();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   db->RemoveObsoleteBlob();
 
   validate_fn();
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -455,8 +455,8 @@ TEST(VLOG_TEST, DBWrapperGCAsync) {
   CleanDir(options.env, dbname);
   int num_entries = 100000;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
   std::vector<std::string> rewrites;
@@ -504,13 +504,13 @@ TEST(VLOG_TEST, DBWrapperGCAsync) {
   std::shuffle(rewrites.begin(), rewrites.end(), g);
 
   struct sync_validate_arg {
-    DBWrapper* db;
+    BlobDB* db;
     port::RWMutex* lock;
     std::unordered_map<std::string, std::string>* kvs;
   };
   sync_validate_arg validateArg = {.db = db, .lock = &rwlock, .kvs = &kvmap};
   auto validate_cb = +[](void* arg) {
-    DBWrapper* db = reinterpret_cast<sync_validate_arg*>(arg)->db;
+    BlobDB* db = reinterpret_cast<sync_validate_arg*>(arg)->db;
     auto* kvmap = reinterpret_cast<sync_validate_arg*>(arg)->kvs;
     auto* lk = reinterpret_cast<sync_validate_arg*>(arg)->lock;
     std::string value;
@@ -547,18 +547,18 @@ TEST(VLOG_TEST, DBWrapperGCAsync) {
   db->WaitVLogGC();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   // Put one more record to expire the old vlog file
   db->Put(WriteOptions(), "OneMoreKey", "value");
   db->RemoveObsoleteBlob();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   validate_fn();
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -575,8 +575,8 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
   CleanDir(options.env, dbname);
   int num_entries = 100000;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
   std::vector<std::string> rewrites;
@@ -624,12 +624,12 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
   std::shuffle(rewrites.begin(), rewrites.end(), g);
 
   struct sync_validate_arg {
-    DBWrapper* db;
+    BlobDB* db;
     std::unordered_map<std::string, std::string>* kvs;
   };
   sync_validate_arg validateArg = {.db = db, .kvs = &kvmap};
   auto validate_cb = +[](void* arg) {
-    DBWrapper* db = reinterpret_cast<sync_validate_arg*>(arg)->db;
+    BlobDB* db = reinterpret_cast<sync_validate_arg*>(arg)->db;
     auto* kvmap = reinterpret_cast<sync_validate_arg*>(arg)->kvs;
     std::string value;
     Status s;
@@ -643,14 +643,14 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
   };
 
   struct sync_overwrite_arg {
-    DBWrapper* db;
+    BlobDB* db;
     std::unordered_map<std::string, std::string>* kvs;
     std::vector<std::string>* rewrites;
   };
   sync_overwrite_arg overwriteArg = {
       .db = db, .kvs = &kvmap, .rewrites = &rewrites};
   auto overwrite_cb = +[](void* arg) {
-    DBWrapper* db = reinterpret_cast<sync_overwrite_arg*>(arg)->db;
+    BlobDB* db = reinterpret_cast<sync_overwrite_arg*>(arg)->db;
     auto* rewrites = reinterpret_cast<sync_overwrite_arg*>(arg)->rewrites;
     auto* kvmap = reinterpret_cast<sync_overwrite_arg*>(arg)->kvs;
     std::string value;
@@ -678,18 +678,18 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
   db->WaitVLogGC();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   // Put one more record to expire the old vlog file
   db->Put(WriteOptions(), "OneMoreKey", "value");
   db->RemoveObsoleteBlob();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   validate_fn();
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -706,8 +706,8 @@ TEST(VLOG_TEST, DBWrapperManualGCSync) {
   CleanDir(options.env, dbname);
   int num_entries = 100000;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
   std::vector<std::string> rewrites;
@@ -757,12 +757,12 @@ TEST(VLOG_TEST, DBWrapperManualGCSync) {
   }
 
   struct sync_point_arg {
-    DBWrapper* db;
+    BlobDB* db;
     std::unordered_map<std::string, std::string>* kvs;
   };
   sync_point_arg myarg = {.db = db, .kvs = &kvmap};
   auto sync_point_cb = +[](void* arg) {
-    DBWrapper* db = reinterpret_cast<sync_point_arg*>(arg)->db;
+    BlobDB* db = reinterpret_cast<sync_point_arg*>(arg)->db;
     auto* kvmap = reinterpret_cast<sync_point_arg*>(arg)->kvs;
     std::string value;
     Status s;
@@ -788,18 +788,18 @@ TEST(VLOG_TEST, DBWrapperManualGCSync) {
   ASSERT_TRUE(db->VLogBGError().ok());
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   // Put one more record to expire the old vlog file
   db->Put(WriteOptions(), "OneMoreKey", "value");
   db->RemoveObsoleteBlob();
 
   delete db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB::Open(options, dbname, &db);
 
   validate_fn();
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -880,8 +880,8 @@ TEST(VLOG_TEST, DBWrapperIterator) {
   int num_batches = num_ondisk_batches + 200;
   int per_batch = 100;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
 
@@ -940,7 +940,7 @@ TEST(VLOG_TEST, DBWrapperIterator) {
   }
   delete iter;
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -959,8 +959,8 @@ TEST(VLOG_TEST, DBWrapperWriteBatch) {
   int num_batches = num_ondisk_batches + 200;
   int per_batch = 100;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   std::unordered_map<std::string, std::string> kvmap;
 
@@ -1002,7 +1002,7 @@ TEST(VLOG_TEST, DBWrapperWriteBatch) {
     ASSERT_EQ(value, p.second);
   }
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -1020,8 +1020,8 @@ TEST(VLOG_TEST, DBWrapperNoGC) {
   int num_ondisk_entries = 100000;
   int num_entries = num_ondisk_entries + 20000;
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
 
   s = db->Put(WriteOptions(), "key1", "value1");
   ASSERT_TRUE(s.ok());
@@ -1072,7 +1072,7 @@ TEST(VLOG_TEST, DBWrapperNoGC) {
   s = db->Get(ReadOptions(), "key1", &value);
   ASSERT_TRUE(s.IsNotFound());
 
-  printf("%s", reinterpret_cast<DBWrapper*>(db)->DebugString().c_str());
+  printf("%s", reinterpret_cast<BlobDB*>(db)->DebugString().c_str());
   delete db;
   CleanDir(options.env, dbname);
 }
@@ -1089,7 +1089,7 @@ TEST(VLOG_TEST, ValueLogRecover) {
   DB* db;
   DB::Open(options, dbname, &db);
   // we do not need to start a real DBWrapper instance in this test
-  DBWrapper* dbwrapper = reinterpret_cast<DBWrapper*>(0x1234);
+  BlobDB* dbwrapper = reinterpret_cast<BlobDB*>(0x1234);
   ValueLogImpl* v;
   ValueLogImpl::Open(options, dbname, dbwrapper, &v);
 
@@ -1188,8 +1188,8 @@ TEST(VLOG_TEST, ConcurrentSPMC) {
   options.blob_max_file_size = 8 << 20;
   std::string dbname("testdb");
 
-  DBWrapper* db;
-  DBWrapper::Open(options, dbname, &db);
+  BlobDB* db;
+  BlobDB::Open(options, dbname, &db);
   std::deque<std::pair<std::string, std::string>> kvq;
   port::Mutex lk;
   port::CondVar cv(&lk);

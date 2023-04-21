@@ -3,7 +3,7 @@
 ## TODO
 
 1. AsyncIterator to speedup range scan for BlobDB.
-2. `class DBWrapper` is handy for developing, apply changes
+2. `class BlobDB` is handy for developing, apply changes
    to `DBImpl` after I finish everything.
 3. mmap limiter for AppendableMmapFile
 4. use tmp_batch_ when BuildWriterGroup to avoid modifying user's writebatch
@@ -26,8 +26,8 @@ sequence number of the snapshot.
 
 This is quite tricky.
 
-We just need to create another wrapper class like `class DBWrapper` inherited from
-`class DBImpl`. The `DBWrapper::Write()` appends our own SeqNumber(say `vlog_entry_seq_number`)
+We just need to create another wrapper class like `class BlobDB` inherited from
+`class DBImpl`. The `BlobDB::Write()` appends our own SeqNumber(say `vlog_entry_seq_number`)
 to the user key, and call `ValueLogImpl::Put()` and `DBImpl::Write()`.
 We can simply maintain our own SeqNumber in LSMTree by `DBImpl::Put("~VLOG:SEQNUMBER~", "123456")`.
 
@@ -35,14 +35,14 @@ The troublesome point is that how we deal with the deleted records?
 
 ----
 
-Say the user called `DBWrapper::Put("UKEY", "VALUExxx")` 3 times, we got 3 records in the db:
+Say the user called `BlobDB::Put("UKEY", "VALUExxx")` 3 times, we got 3 records in the db:
 
 | UKEY100 | VALUE0 |
 |---------|--------|
 | UKEY101 | VALUE1 |
 | UKEY102 | VALUE2 |
 
-Then the user called `DBWrapper::Delete("UKEY")`, how to deal with that?
+Then the user called `BlobDB::Delete("UKEY")`, how to deal with that?
 How can we correctly reclaim the space of the `UKEY001`-`UKEY003` when doing compaction?
 
 ---

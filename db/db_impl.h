@@ -83,7 +83,7 @@ class DBImpl : public DB {
 
  protected:
   friend class DB;
-  friend class DBWrapper;
+  friend class BlobDB;
   struct CompactionState;
   struct Writer;
   struct WriterGroup;
