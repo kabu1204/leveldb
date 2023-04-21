@@ -1,5 +1,5 @@
-//
-// Created by 于承业 on 2023/3/29.
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 //
 // Entry in the .vlog file:
 //  key_len:    VarUint32

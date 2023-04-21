@@ -1,8 +1,7 @@
-//
-// Created by 于承业 on 2023/4/13.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
-#include "db/value_log_version.h"
+#include "db/blob_vlog_version.h"
 
 #include "leveldb/status.h"
 

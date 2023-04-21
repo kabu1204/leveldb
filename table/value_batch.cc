@@ -1,6 +1,5 @@
-//
-// Created by 于承业 on 2023/4/6.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
 #include "value_batch.h"
 

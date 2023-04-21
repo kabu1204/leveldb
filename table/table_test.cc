@@ -18,8 +18,6 @@
 #include "table/block.h"
 #include "table/block_builder.h"
 #include "table/format.h"
-#include "table/value_table.h"
-#include "table/value_block.h"
 #include "table/vlog.h"
 #include "util/random.h"
 #include "util/testutil.h"
@@ -290,91 +288,6 @@ class TableConstructor : public Constructor {
   Table* table_;
 
   TableConstructor();
-};
-
-class ValueBlockConstructor : public Constructor {
- public:
-  explicit ValueBlockConstructor(const Comparator* cmp, bool is_data_block = true)
-      : Constructor(cmp), comparator_(cmp), block_(nullptr),
-        is_data_block_(is_data_block) {}
-  ~ValueBlockConstructor() override { delete block_; }
-  Status FinishImpl(const Options& options, const KVMap& data) override {
-    delete block_;
-    block_ = nullptr;
-    ValueBlockBuilder builder(&options);
-
-    for (const auto& kvp : data) {
-      builder.Add(kvp.first, kvp.second);
-    }
-    // Open the block
-    data_ = builder.Finish().ToString();
-    BlockContents contents;
-    contents.data = data_;
-    contents.cachable = false;
-    contents.heap_allocated = false;
-    block_ = new ValueBlock(contents);
-    return Status::OK();
-  }
-
-  Iterator* NewIterator() const override {
-    if(is_data_block_) {
-      return ValueBlock::NewDataIterator(block_);
-    } else {
-      return ValueBlock::NewIndexIterator(block_);
-    }
-  }
-
- private:
-  const Comparator* const comparator_;
-  std::string data_;
-  ValueBlock* block_;
-  bool is_data_block_;
-
-  ValueBlockConstructor();
-};
-
-class ValueTableConstructor : public Constructor {
- public:
-  ValueTableConstructor(const Comparator* cmp)
-      : Constructor(cmp), source_(nullptr), table_(nullptr) {}
-  ~ValueTableConstructor() override { Reset(); }
-  Status FinishImpl(const Options& options, const KVMap& data) override {
-    Reset();
-    StringSink sink;
-    ValueTableBuilder builder(options, &sink);
-
-    for (const auto& kvp : data) {
-      builder.Add(kvp.first, kvp.second);
-      EXPECT_LEVELDB_OK(builder.status());
-    }
-    Status s = builder.Finish();
-    EXPECT_LEVELDB_OK(s);
-
-    EXPECT_EQ(sink.contents().size(), builder.FileSize());
-
-    // Open the table
-    source_ = new StringSource(sink.contents());
-    Options table_options;
-    table_options.comparator = options.comparator;
-    return ValueTable::Open(table_options, source_, sink.contents().size(), &table_);
-  }
-
-  Iterator* NewIterator() const override {
-    return table_->NewIterator(ReadOptions());
-  }
-
- private:
-  void Reset() {
-    delete table_;
-    delete source_;
-    table_ = nullptr;
-    source_ = nullptr;
-  }
-
-  StringSource* source_;
-  ValueTable* table_;
-
-  ValueTableConstructor();
 };
 
 class VLogConstructor: public Constructor {
@@ -991,85 +904,6 @@ TEST(TableTest, ApproximateOffsetOfCompressed) {
   ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04"), min_z, max_z));
   // Have now emitted two large compressible strings, so adjust expected offset.
   ASSERT_TRUE(Between(c.ApproximateOffsetOf("xyz"), 2 * min_z, 2 * max_z));
-}
-
-TEST(ValueTableTest, Sample){
-  ValueTableConstructor c(BytewiseComparator());
-  c.Add("k01", "hello");  // block 0 index 0
-  c.Add("k02", "hello2");  // block 0 index 1
-  c.Add("k03", std::string(10000, 'x'));  // block 0 index 2
-  c.Add("k04", std::string(200000, 'x'));  // block 1 index 0
-  c.Add("k05", std::string(300000, 'x'));  // block 2 index 0
-  c.Add("k06", "hello3");  // block 3 index 0
-  c.Add("k07", std::string(100000, 'x'));  // block 3 index 1
-  std::vector<std::string> keys;
-  KVMap kvmap;
-  Options options;
-  options.block_size = 1024;
-  options.compression = kSnappyCompression;
-  c.Finish(options, &keys, &kvmap);
-
-  Iterator* iter = c.NewIterator();
-  int n = 0;
-  for(iter->SeekToFirst(); iter->Valid(); iter->Next(), n++){
-    ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  }
-  ASSERT_EQ(n, kvmap.size());
-
-  ValueHandle handle;
-  std::string handle_encoding;
-  handle.table_ = 0;
-
-  handle.block_ = 0;
-  handle.offset_ = 0;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k01");
-
-  handle.block_ = 0;
-  handle.offset_ = 1;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k02");
-
-  handle.block_ = 0;
-  handle.offset_ = 2;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k03");
-
-  handle.block_ = 1;
-  handle.offset_ = 0;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k04");
-
-  handle.block_ = 2;
-  handle.offset_ = 0;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k05");
-
-  handle.block_ = 3;
-  handle.offset_ = 0;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k06");
-
-  handle.block_ = 3;
-  handle.offset_ = 1;
-  handle.EncodeTo(&handle_encoding);
-  iter->Seek(handle_encoding);
-  ASSERT_EQ(iter->value(), kvmap[iter->key().ToString()]);
-  ASSERT_EQ(iter->key(), "k07");
-
-  delete iter;
 }
 
 TEST(VLogTest, Sample){

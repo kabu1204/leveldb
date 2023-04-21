@@ -1,15 +1,14 @@
-//
-// Created by 于承业 on 2023/3/22.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef LEVELDB_VALUE_LOG_IMPL_H
-#define LEVELDB_VALUE_LOG_IMPL_H
+#ifndef LEVELDB_BLOB_VLOG_IMPL_H
+#define LEVELDB_BLOB_VLOG_IMPL_H
 
+#include "db/blob_db.h"
+#include "db/blob_vlog_cache.h"
+#include "db/blob_vlog_version.h"
 #include "db/db_impl.h"
-#include "db/db_wrapper.h"
 #include "db/log_writer.h"
-#include "db/value_log_version.h"
-#include "db/value_table_cache.h"
 #include <deque>
 #include <map>
 #include <set>
@@ -284,4 +283,4 @@ class ValueLogImpl {
 
 }  // namespace leveldb
 
-#endif  // LEVELDB_VALUE_LOG_IMPL_H
+#endif  // LEVELDB_BLOB_VLOG_IMPL_H

@@ -1,17 +1,17 @@
-//
-// Created by 于承业 on 2023/3/23.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef LEVELDB_VALUE_TABLE_CACHE_H
-#define LEVELDB_VALUE_TABLE_CACHE_H
+#ifndef LEVELDB_BLOB_VLOG_CACHE_H
+#define LEVELDB_BLOB_VLOG_CACHE_H
 
+#include "db/dbformat.h"
 #include <cstdint>
 #include <string>
 
-#include "db/dbformat.h"
 #include "leveldb/cache.h"
-#include "table/vlog.h"
+
 #include "port/port.h"
+#include "table/vlog.h"
 
 namespace leveldb {
 
@@ -47,4 +47,4 @@ class VLogCache {
 
 }  // namespace leveldb
 
-#endif  // LEVELDB_VALUE_TABLE_CACHE_H
+#endif  // LEVELDB_BLOB_VLOG_CACHE_H

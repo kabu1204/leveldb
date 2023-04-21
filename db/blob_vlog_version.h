@@ -1,9 +1,8 @@
-//
-// Created by 于承业 on 2023/4/13.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef LEVELDB_VALUE_LOG_VERSION_H
-#define LEVELDB_VALUE_LOG_VERSION_H
+#ifndef LEVELDB_BLOB_VLOG_VERSION_H
+#define LEVELDB_BLOB_VLOG_VERSION_H
 
 #include "db/dbformat.h"
 #include <map>
@@ -74,4 +73,4 @@ class BlobVersionEdit {
 
 }  // namespace leveldb
 
-#endif  // LEVELDB_VALUE_LOG_VERSION_H
+#endif  // LEVELDB_BLOB_VLOG_VERSION_H

@@ -1,6 +1,7 @@
 # Copyright 2017 The LevelDB Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file. See the AUTHORS file for names of contributors.
+# Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 cmake_minimum_required(VERSION 3.9)
 # Keep the version below in sync with the one in db.h
@@ -156,8 +157,8 @@ target_sources(leveldb
         "db/memtable.cc"
         "db/memtable.h"
         "db/repair.cc"
-        "db/db_wrapper.h"
-        "db/db_wrapper.cc"
+        "db/blob_db.h"
+        "db/blob_db.cc"
         "db/skiplist.h"
         "db/snapshot.h"
         "db/table_cache.cc"
@@ -168,19 +169,13 @@ target_sources(leveldb
         "db/version_set.h"
         "db/write_batch_internal.h"
         "db/write_batch.cc"
-        "db/value_log_impl.cc"
-        "db/value_log_impl.h"
-        "db/value_log_gc.cc"
-        "db/value_log_version.cc"
-        "db/value_log_version.h"
-        "util/threadpool_impl.cc"
-        "util/threadpool_impl.h"
-        "table/value_table.cc"
-        "table/value_table.h"
-        "table/value_block.cc"
-        "table/value_block.h"
-        "db/value_table_cache.cc"
-        "db/value_table_cache.h"
+        "db/blob_vlog_impl.cc"
+        "db/blob_vlog_impl.h"
+        "db/blob_vlog_gc.cc"
+        "db/blob_vlog_version.cc"
+        "db/blob_vlog_version.h"
+        "db/blob_vlog_cache.cc"
+        "db/blob_vlog_cache.h"
         "port/port_stdcxx.h"
         "port/port.h"
         "port/thread_annotations.h"
@@ -225,16 +220,18 @@ target_sources(leveldb
         "util/options.cc"
         "util/random.h"
         "util/status.cc"
+        "util/threadpool_impl.cc"
+        "util/threadpool_impl.h"
 
-  # Only CMake 3.3+ supports PUBLIC sources in targets exported by "install".
-  $<$<VERSION_GREATER:CMAKE_VERSION,3.2>:PUBLIC>
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/c.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/cache.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/comparator.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/db.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/dumpfile.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/env.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/export.h"
+        # Only CMake 3.3+ supports PUBLIC sources in targets exported by "install".
+        $<$<VERSION_GREATER:CMAKE_VERSION,3.2>:PUBLIC>
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/c.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/cache.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/comparator.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/db.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/dumpfile.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/env.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/export.h"
     "${LEVELDB_PUBLIC_INCLUDE_DIR}/filter_policy.h"
     "${LEVELDB_PUBLIC_INCLUDE_DIR}/iterator.h"
     "${LEVELDB_PUBLIC_INCLUDE_DIR}/options.h"
@@ -374,7 +371,6 @@ if(LEVELDB_BUILD_TESTS)
         "helpers/memenv/memenv_test.cc"
         "table/filter_block_test.cc"
         "table/table_test.cc"
-        "table/value_table_test.cc"
         "util/arena_test.cc"
         "util/bloom_test.cc"
         "util/cache_test.cc"
@@ -427,7 +423,6 @@ if(LEVELDB_BUILD_TESTS)
   endfunction(leveldb_test)
 
   leveldb_test("db/c_test.c")
-  leveldb_test("user/main.cc")
 
   if(NOT BUILD_SHARED_LIBS)
     # TODO(costan): This test also uses

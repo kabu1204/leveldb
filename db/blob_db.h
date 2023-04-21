@@ -1,9 +1,8 @@
-//
-// Created by 于承业 on 2023/4/4.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef LEVELDB_DB_WRAPPER_H
-#define LEVELDB_DB_WRAPPER_H
+#ifndef LEVELDB_BLOB_DB_H
+#define LEVELDB_BLOB_DB_H
 
 #include "db/db_impl.h"
 #include <utility>
@@ -95,4 +94,4 @@ class BlobDB : public DB {
 
 }  // namespace leveldb
 
-#endif  // LEVELDB_DB_WRAPPER_H
+#endif  // LEVELDB_BLOB_DB_H
