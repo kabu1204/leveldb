@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 //
 // A Status encapsulates the result of an operation.  It may indicate success,
 // or it may indicate an error with an associated error message.
@@ -36,6 +37,8 @@ class LEVELDB_EXPORT Status {
   // Return a success status.
   static Status OK() { return Status(); }
 
+  static Status FoundValueHandle() { return Status(kValueHandle, "", ""); }
+
   // Return error status of an appropriate type.
   static Status NotFound(const Slice& msg, const Slice& msg2 = Slice()) {
     return Status(kNotFound, msg, msg2);
@@ -52,6 +55,14 @@ class LEVELDB_EXPORT Status {
   static Status IOError(const Slice& msg, const Slice& msg2 = Slice()) {
     return Status(kIOError, msg, msg2);
   }
+
+  static Status NonFatal(const Slice& msg, const Slice& msg2 = Slice()) {
+    return Status(kNonFatal, msg, msg2);
+  }
+
+  bool IsNonFatal() const { return code() == kNonFatal; }
+
+  bool IsValueHandle() const { return code() == kValueHandle; }
 
   // Returns true iff the status indicates success.
   bool ok() const { return (state_ == nullptr); }
@@ -78,11 +89,13 @@ class LEVELDB_EXPORT Status {
  private:
   enum Code {
     kOk = 0,
-    kNotFound = 1,
-    kCorruption = 2,
-    kNotSupported = 3,
-    kInvalidArgument = 4,
-    kIOError = 5
+    kValueHandle = 1,
+    kNotFound = 2,
+    kCorruption = 3,
+    kNotSupported = 4,
+    kInvalidArgument = 5,
+    kNonFatal = 6,
+    kIOError = 7
   };
 
   Code code() const {

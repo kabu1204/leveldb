@@ -1,12 +1,13 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
-#include <sys/types.h>
-
+#include "db/blob_db.h"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/types.h>
 
 #include "leveldb/cache.h"
 #include "leveldb/comparator.h"
@@ -14,6 +15,7 @@
 #include "leveldb/env.h"
 #include "leveldb/filter_policy.h"
 #include "leveldb/write_batch.h"
+
 #include "port/port.h"
 #include "util/crc32c.h"
 #include "util/histogram.h"
@@ -123,6 +125,21 @@ static bool FLAGS_compression = true;
 
 // Use the db with the following name.
 static const char* FLAGS_db = nullptr;
+
+// If true, enable BlobDB
+static bool FLAGS_blob = false;
+
+// Soft limit of max blob file size
+static int FLAGS_blob_file_size = 64 << 20;
+
+// Value size threshold of BlobDB
+static int FLAGS_blob_value_size_threshold = 1024;
+
+// Max background read threads of BlobDB when iterating
+static int FLAGS_blob_iter_threads = 8;
+
+// If true, enable background prefetch for BlobDB iterator
+static bool FLAGS_blob_iter_prefetch = true;
 
 namespace leveldb {
 
@@ -776,7 +793,17 @@ class Benchmark {
     options.reuse_logs = FLAGS_reuse_logs;
     options.compression =
         FLAGS_compression ? kSnappyCompression : kNoCompression;
-    Status s = DB::Open(options, FLAGS_db, &db_);
+    Status s;
+    if (FLAGS_blob) {
+      BlobDB* blob_db;
+      options.blob_value_size_threshold = FLAGS_blob_value_size_threshold;
+      options.blob_background_read_threads = FLAGS_blob_iter_threads;
+      options.blob_max_file_size = FLAGS_blob_file_size;
+      s = BlobDB::Open(options, FLAGS_db, &blob_db);
+      db_ = blob_db;
+    } else {
+      s = DB::Open(options, FLAGS_db, &db_);
+    }
     if (!s.ok()) {
       std::fprintf(stderr, "open error: %s\n", s.ToString().c_str());
       std::exit(1);
@@ -826,7 +853,9 @@ class Benchmark {
   }
 
   void ReadSequential(ThreadState* thread) {
-    Iterator* iter = db_->NewIterator(ReadOptions());
+    ReadOptions opt;
+    opt.blob_prefetch = FLAGS_blob_iter_prefetch;
+    Iterator* iter = db_->NewIterator(opt);
     int i = 0;
     int64_t bytes = 0;
     for (iter->SeekToFirst(); i < reads_ && iter->Valid(); iter->Next()) {
@@ -839,7 +868,9 @@ class Benchmark {
   }
 
   void ReadReverse(ThreadState* thread) {
-    Iterator* iter = db_->NewIterator(ReadOptions());
+    ReadOptions opt;
+    opt.blob_prefetch = FLAGS_blob_iter_prefetch;
+    Iterator* iter = db_->NewIterator(opt);
     int i = 0;
     int64_t bytes = 0;
     for (iter->SeekToLast(); i < reads_ && iter->Valid(); iter->Prev()) {
@@ -855,18 +886,21 @@ class Benchmark {
     ReadOptions options;
     std::string value;
     int found = 0;
+    int64_t bytes = 0;
     KeyBuffer key;
     for (int i = 0; i < reads_; i++) {
       const int k = thread->rand.Uniform(FLAGS_num);
       key.Set(k);
       if (db_->Get(options, key.slice(), &value).ok()) {
         found++;
+        bytes += key.slice().size() + value.size();
       }
       thread->stats.FinishedSingleOp();
     }
     char msg[100];
     std::snprintf(msg, sizeof(msg), "(%d of %d found)", found, num_);
     thread->stats.AddMessage(msg);
+    thread->stats.AddBytes(bytes);
   }
 
   void ReadMissing(ThreadState* thread) {
@@ -897,6 +931,7 @@ class Benchmark {
 
   void SeekRandom(ThreadState* thread) {
     ReadOptions options;
+    options.blob_prefetch = FLAGS_blob_iter_prefetch;
     int found = 0;
     KeyBuffer key;
     for (int i = 0; i < reads_; i++) {
@@ -915,6 +950,7 @@ class Benchmark {
 
   void SeekOrdered(ThreadState* thread) {
     ReadOptions options;
+    options.blob_prefetch = FLAGS_blob_iter_prefetch;
     Iterator* iter = db_->NewIterator(options);
     int found = 0;
     int k = 0;
@@ -1077,6 +1113,19 @@ int main(int argc, char** argv) {
       FLAGS_open_files = n;
     } else if (strncmp(argv[i], "--db=", 5) == 0) {
       FLAGS_db = argv[i] + 5;
+    } else if (sscanf(argv[i], "--blob=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_blob = n;
+    } else if (sscanf(argv[i], "--blob_prefetch=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_blob_iter_prefetch = n;
+    } else if (sscanf(argv[i], "--blob_iter_threads=%d%c", &n, &junk) == 1) {
+      FLAGS_blob_iter_threads = n;
+    } else if (sscanf(argv[i], "--blob_file_size=%d%c", &n, &junk) == 1) {
+      FLAGS_blob_file_size = n;
+    } else if (sscanf(argv[i], "--blob_value_size_threshold=%d%c", &n, &junk) ==
+               1) {
+      FLAGS_blob_value_size_threshold = n;
     } else {
       std::fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
       std::exit(1);

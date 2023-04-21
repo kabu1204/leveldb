@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #ifndef STORAGE_LEVELDB_TABLE_FORMAT_H_
 #define STORAGE_LEVELDB_TABLE_FORMAT_H_
@@ -93,6 +94,32 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
 
 inline BlockHandle::BlockHandle()
     : offset_(~static_cast<uint64_t>(0)), size_(~static_cast<uint64_t>(0)) {}
+
+/*
+ * ValueHandle is a logical pointer with
+ * format <value_table_id, block_id, offset, size>
+ * Notice: offset_ is a logical offset, which is actually
+ * entry_idx.
+ */
+class ValueHandle {
+ public:
+  uint32_t table_{0};
+  uint32_t block_{0};
+  uint32_t offset_{0};
+  uint32_t size_{0};
+  ValueHandle() = default;
+  ValueHandle(uint32_t table_id, uint32_t block_id, uint32_t offset,
+              uint32_t size)
+      : table_(table_id), block_(block_id), offset_(offset), size_(size) {}
+  bool operator==(const ValueHandle& x) const {
+    return std::memcmp(&x, this, sizeof(ValueHandle)) == 0;
+  }
+  bool operator!=(const ValueHandle& x) const {
+    return std::memcmp(&x, this, sizeof(ValueHandle)) != 0;
+  }
+  void EncodeTo(std::string* dst) const;
+  Status DecodeFrom(Slice* input);
+};
 
 }  // namespace leveldb
 

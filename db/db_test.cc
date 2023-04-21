@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #include "leveldb/db.h"
 
@@ -414,6 +415,7 @@ class DBTest : public testing::Test {
           }
           first = false;
           switch (ikey.type) {
+            case kTypeValueHandle:
             case kTypeValue:
               result += iter->value().ToString();
               break;
@@ -2151,6 +2153,11 @@ class ModelDB : public DB {
     Handler handler;
     handler.map_ = &map_;
     return batch->Iterate(&handler);
+  }
+
+  Status Write(const WriteOptions& options, WriteBatch* batch,
+               WriteCallback* callback) override {
+    return Write(options, batch);
   }
 
   bool GetProperty(const Slice& property, std::string* value) override {

@@ -20,6 +20,34 @@ namespace leveldb {
 //     ... some complex code, possibly with multiple return paths ...
 //   }
 
+class SCOPED_LOCKABLE ReadLock {
+ public:
+  explicit ReadLock(port::RWLock* lk) SHARED_LOCK_FUNCTION(lk) : lk_(lk) {
+    this->lk_->RLock();
+  }
+  ~ReadLock() UNLOCK_FUNCTION() { this->lk_->RUnlock(); }
+
+  ReadLock(const ReadLock&) = delete;
+  ReadLock& operator=(const ReadLock&) = delete;
+
+ private:
+  port::RWLock* const lk_;
+};
+
+class SCOPED_LOCKABLE WriteLock {
+ public:
+  explicit WriteLock(port::RWLock* lk) EXCLUSIVE_LOCK_FUNCTION(lk) : lk_(lk) {
+    this->lk_->WLock();
+  }
+  ~WriteLock() UNLOCK_FUNCTION() { this->lk_->WUnlock(); }
+
+  WriteLock(const WriteLock&) = delete;
+  WriteLock& operator=(const WriteLock&) = delete;
+
+ private:
+  port::RWLock* const lk_;
+};
+
 class SCOPED_LOCKABLE MutexLock {
  public:
   explicit MutexLock(port::Mutex* mu) EXCLUSIVE_LOCK_FUNCTION(mu) : mu_(mu) {

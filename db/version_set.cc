@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #include "db/version_set.h"
 
@@ -254,6 +255,7 @@ enum SaverState {
 };
 struct Saver {
   SaverState state;
+  ValueType valueType;
   const Comparator* ucmp;
   Slice user_key;
   std::string* value;
@@ -266,7 +268,8 @@ static void SaveValue(void* arg, const Slice& ikey, const Slice& v) {
     s->state = kCorrupt;
   } else {
     if (s->ucmp->Compare(parsed_key.user_key, s->user_key) == 0) {
-      s->state = (parsed_key.type == kTypeValue) ? kFound : kDeleted;
+      s->valueType = parsed_key.type;
+      s->state = (parsed_key.type != kTypeDeletion) ? kFound : kDeleted;
       if (s->state == kFound) {
         s->value->assign(v.data(), v.size());
       }
@@ -322,7 +325,7 @@ void Version::ForEachOverlapping(Slice user_key, Slice internal_key, void* arg,
 }
 
 Status Version::Get(const ReadOptions& options, const LookupKey& k,
-                    std::string* value, GetStats* stats) {
+                    std::string* value, GetStats* stats, ValueType* valueType) {
   stats->seek_file = nullptr;
   stats->seek_file_level = -1;
 
@@ -396,6 +399,8 @@ Status Version::Get(const ReadOptions& options, const LookupKey& k,
   state.saver.value = value;
 
   ForEachOverlapping(state.saver.user_key, state.ikey, &state, &State::Match);
+
+  if (valueType != nullptr) *valueType = state.saver.valueType;
 
   return state.found ? state.s : Status::NotFound(Slice());
 }
@@ -692,13 +697,10 @@ class VersionSet::Builder {
           add_iter++;
         }
       }
-      while(add_iter != added_files->end()){
-        MaybeAddFile(v, level, *add_iter);
-        add_iter++;
-      }
-      while(base_iter != base_end){
-        MaybeAddFile(v, level, *base_iter);
-        base_iter++;
+      if (add_iter!=added_files->end()) {
+        std::for_each(add_iter, added_files->end(), [this, v, level](FileMetaData* f){ MaybeAddFile(v, level, f); });
+      } else {
+        std::for_each(base_iter, base_end, [this, v, level](FileMetaData* f){ MaybeAddFile(v, level, f); });
       }
 #else
       for (const auto& added_file : *added_files) {

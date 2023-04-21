@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -8,11 +9,6 @@
 #ifndef __Fuchsia__
 #include <sys/resource.h>
 #endif
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <unistd.h>
-
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
@@ -21,20 +17,28 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <queue>
 #include <set>
 #include <string>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <thread>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 
 #include "leveldb/env.h"
 #include "leveldb/slice.h"
 #include "leveldb/status.h"
+
 #include "port/port.h"
 #include "port/thread_annotations.h"
 #include "util/env_posix_test_helper.h"
+#include "util/mutexlock.h"
 #include "util/posix_logger.h"
+#include "util/threadpool_impl.h"
 
 namespace leveldb {
 
@@ -64,6 +68,13 @@ Status PosixError(const std::string& context, int error_number) {
   } else {
     return Status::IOError(context, std::strerror(error_number));
   }
+}
+
+// REQUIRES: p is multiple of 2
+uint64_t AlignBackward(uint64_t x, uint64_t p){
+  if(x & (p-1))
+    x = (x+p) & (~(p-1));
+  return x;
 }
 
 // Helper class to limit resource usage to avoid exhaustion.
@@ -464,6 +475,162 @@ class PosixWritableFile final : public WritableFile {
   const std::string dirname_;  // The directory of filename_.
 };
 
+class PosixMmapAppendableFile final: public AppendableRandomAccessFile {
+ public:
+  // REQUIRES: len is multiple of OS page_size
+  // REQUIRES: reserved > file_size
+  // REQUIRES: O_TRUNC enabled when open fd
+  PosixMmapAppendableFile(std::string filename, size_t file_size, size_t reserved,
+                          int fd)
+      : filename_(std::move(filename)),
+        len_(file_size),
+        cap_(0),
+        reserved_(reserved),
+        prev_sync_(0),
+        fd_(fd),
+        page_size_(getpagesize())
+  {
+    reserved_ = AlignBackward(std::max<uint64_t>(file_size << 1, reserved),
+                              page_size_);  // max(2 * fileSize, reserved)
+
+    mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,
+                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (mmap_base_ == MAP_FAILED) {
+      status_ = Status::IOError("failed to mmap reserved space");
+      printf("[LOG] mmap failed");
+      return;
+    }
+
+    assert(reserved_ > file_size);
+    assert(!(reserved_ & (page_size_ - 1)));
+    ExtendMmapSize(file_size);
+    //    printf("[LOG] init: len_=%lu, cap_=%lu, reserved_=%lu\n", len_.load(),
+    //    cap_,
+    //           reserved_);
+  }
+
+  PosixMmapAppendableFile(const PosixMmapAppendableFile&) = delete;
+  PosixMmapAppendableFile& operator=(const PosixMmapAppendableFile&) = delete;
+
+  virtual ~PosixMmapAppendableFile() override {
+    ::munmap(static_cast<void*>(mmap_base_), reserved_);
+    if(ftruncate(fd_, len_)<0){
+      printf("failed to truncate file when closing\n");
+    }
+    //    printf("[LOG] truncate file size from %lu to %lu\n", cap_,
+    //    len_.load());
+    close(fd_);
+  }
+
+  virtual Status Read(uint64_t offset, size_t n, Slice* result,
+                      char* scratch) const override {
+    if(!status_.ok()) return status_;
+
+    ReadLock l(&rwlock);
+    if (offset + n > len_.load()) {
+      *result = Slice();
+      return PosixError(filename_, EINVAL);
+    }
+
+    *result = Slice(mmap_base_ + offset, n);
+    return Status::OK();
+  }
+
+  virtual Status Append(const Slice& data) override {
+    if(!status_.ok()) return status_;
+    size_t write_size = data.size();
+    const char* write_data = data.data();
+
+    WriteLock l(&rwlock);
+    if (len_ + write_size > cap_) {
+      ExtendMmapSize(len_ + write_size);
+      if (!status_.ok()) {
+        return status_;
+      }
+    }
+
+    std::memcpy(mmap_base_ + len_, write_data, write_size);
+    len_ += write_size;
+
+    return status_;
+  }
+
+  virtual Status Close() override {
+    return Status::OK();
+  }
+
+  virtual Status Flush() override {
+    return Status::OK();
+  }
+
+  virtual Status Sync() override {
+    WriteLock l(&rwlock);
+    assert(len_ >= prev_sync_);
+    if(len_ - prev_sync_ <= 0) return status_;
+    if(::msync(mmap_base_+prev_sync_, len_ - prev_sync_, MS_SYNC)<0){
+      status_ =  Status::IOError("failed to msync()");
+    }
+    //    printf("[LOG] Sync from %lu to %lu\n", prev_sync_, len_.load());
+    prev_sync_ = len_;
+    return status_;
+  }
+
+  uint64_t Offset() override { return len_.load(); }
+
+ private:
+  Status ExtendMmapSize(size_t need) {
+    rwlock.AssertWLockHeld();
+    size_t oldcap = cap_;
+    size_t newcap = AlignBackward(oldcap + (oldcap >> 1), page_size_);
+    if (newcap < need) {
+      newcap = AlignBackward(need + (need >> 1), page_size_);  // 1.5 * need
+    }
+    if (newcap < page_size_) {
+      newcap = page_size_;
+    }
+    if (ftruncate(fd_, newcap) < 0) {
+      status_ = Status::IOError("failed to truncate file");
+      return status_;
+    }
+
+    if (newcap > reserved_) {
+      ::munmap(mmap_base_, reserved_);
+      reserved_ = reserved_ << 1;
+      mmap_base_ = (char*)::mmap(NULL, reserved_, PROT_NONE,
+                                 MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+      if(mmap_base_==MAP_FAILED){
+        status_ = Status::IOError("failed to mmap reserved space");
+        return status_;
+      }
+      //      printf("[LOG] Extended reserved space from %lu to %lu\n",
+      //      reserved_>>1, reserved_);
+      oldcap = 0;
+    }
+
+    char* addr = (char*)::mmap(mmap_base_ + oldcap, newcap - oldcap, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd_, oldcap);
+    if(addr==MAP_FAILED || addr != mmap_base_ + oldcap){
+      status_ = Status::IOError("failed to mmap file to reserved space");
+      return status_;
+    }
+
+    //    printf("[LOG] Extended file mapping from %lu to %lu\n", oldcap,
+    //    newcap);
+    cap_ = newcap;
+    return status_;
+  }
+
+  mutable port::RWMutex rwlock;
+  Status status_;
+  const size_t page_size_;
+  const std::string filename_;
+  char* mmap_base_ GUARDED_BY(rwlock);
+  std::atomic<size_t> len_;              // file used length
+  size_t prev_sync_ GUARDED_BY(rwlock);  // previous sync point
+  size_t cap_ GUARDED_BY(rwlock);        // file mapped length
+  size_t reserved_ GUARDED_BY(rwlock);   // mmap reserved
+  int fd_;
+};
+
 int LockOrUnlock(int fd, bool lock) {
   errno = 0;
   struct ::flock file_lock_info;
@@ -596,6 +763,36 @@ class PosixEnv : public Env {
     return Status::OK();
   }
 
+  Status NewAppendableRandomAccessFile(const std::string& filename,
+                                       AppendableRandomAccessFile** result) override {
+    int fd = ::open(filename.c_str(),
+                    O_APPEND | O_RDWR | O_CREAT | kOpenBaseFlags, 0644);
+    if (fd < 0) {
+      *result = nullptr;
+      return PosixError(filename, errno);
+    }
+    uint64_t file_size;
+    Status status = GetFileSize(filename, &file_size);
+    if(status.ok()){
+      uint64_t reserved = std::max<uint64_t>(file_size<<1, 8 << 20);
+      *result = new PosixMmapAppendableFile(filename, file_size, reserved, fd);
+    }
+    return Status::OK();
+  }
+
+  Status TruncateFile(const std::string& filename, uint64_t fileSize) override {
+    int fd = ::open(filename.c_str(), O_WRONLY | kOpenBaseFlags, 0644);
+    if (fd < 0) {
+      return PosixError(filename, errno);
+    }
+    if (ftruncate(fd, fileSize) < 0) {
+      close(fd);
+      return PosixError(filename, errno);
+    }
+    close(fd);
+    return Status::OK();
+  }
+
   bool FileExists(const std::string& filename) override {
     return ::access(filename.c_str(), F_OK) == 0;
   }
@@ -691,11 +888,23 @@ class PosixEnv : public Env {
   void Schedule(void (*background_work_function)(void* background_work_arg),
                 void* background_work_arg) override;
 
+  void SubmitJob(const std::function<void()>& job) override;
+
+  void SubmitJob(std::function<void()>&& job) override;
+
+  void SetPoolBackgroundThreads(int num) override;
+
+  int GetPoolBackgroundThreads() override;
+
+  void WaitForCompleteAndJoinAll() override;
+
   void StartThread(void (*thread_main)(void* thread_main_arg),
                    void* thread_main_arg) override {
     std::thread new_thread(thread_main, thread_main_arg);
     new_thread.detach();
   }
+
+  size_t PageSize() const override { return getpagesize(); }
 
   Status GetTestDirectory(std::string* result) override {
     const char* env = std::getenv("TEST_TMPDIR");
@@ -733,6 +942,11 @@ class PosixEnv : public Env {
     }
   }
 
+  virtual Status NewStdLogger(Logger** result) override {
+    *result = new PosixLogger(stdout);
+    return Status::OK();
+  }
+
   uint64_t NowMicros() override {
     static constexpr uint64_t kUsecondsPerSecond = 1000000;
     struct ::timeval tv;
@@ -745,32 +959,7 @@ class PosixEnv : public Env {
   }
 
  private:
-  void BackgroundThreadMain();
-
-  static void BackgroundThreadEntryPoint(PosixEnv* env) {
-    env->BackgroundThreadMain();
-  }
-
-  // Stores the work item data in a Schedule() call.
-  //
-  // Instances are constructed on the thread calling Schedule() and used on the
-  // background thread.
-  //
-  // This structure is thread-safe because it is immutable.
-  struct BackgroundWorkItem {
-    explicit BackgroundWorkItem(void (*function)(void* arg), void* arg)
-        : function(function), arg(arg) {}
-
-    void (*const function)(void*);
-    void* const arg;
-  };
-
-  port::Mutex background_work_mutex_;
-  port::CondVar background_work_cv_ GUARDED_BY(background_work_mutex_);
-  bool started_background_thread_ GUARDED_BY(background_work_mutex_);
-
-  std::queue<BackgroundWorkItem> background_work_queue_
-      GUARDED_BY(background_work_mutex_);
+  ThreadPoolImpl thread_pool_;
 
   PosixLockTable locks_;  // Thread-safe.
   Limiter mmap_limiter_;  // Thread-safe.
@@ -805,50 +994,34 @@ int MaxOpenFiles() {
 
 }  // namespace
 
-PosixEnv::PosixEnv()
-    : background_work_cv_(&background_work_mutex_),
-      started_background_thread_(false),
-      mmap_limiter_(MaxMmaps()),
-      fd_limiter_(MaxOpenFiles()) {}
+PosixEnv::PosixEnv() : mmap_limiter_(MaxMmaps()), fd_limiter_(MaxOpenFiles()) {}
 
 void PosixEnv::Schedule(
     void (*background_work_function)(void* background_work_arg),
     void* background_work_arg) {
-  background_work_mutex_.Lock();
-
-  // Start the background thread, if we haven't done so already.
-  if (!started_background_thread_) {
-    started_background_thread_ = true;
-    std::thread background_thread(PosixEnv::BackgroundThreadEntryPoint, this);
-    background_thread.detach();
-  }
-
-  // If the queue is empty, the background thread may be waiting for work.
-  if (background_work_queue_.empty()) {
-    background_work_cv_.Signal();
-  }
-
-  background_work_queue_.emplace(background_work_function, background_work_arg);
-  background_work_mutex_.Unlock();
+  thread_pool_.Schedule(background_work_function, background_work_arg);
 }
 
-void PosixEnv::BackgroundThreadMain() {
-  while (true) {
-    background_work_mutex_.Lock();
+void PosixEnv::SubmitJob(const std::function<void()>& job) {
+  thread_pool_.SubmitJob(job);
+}
 
-    // Wait until there is work to be done.
-    while (background_work_queue_.empty()) {
-      background_work_cv_.Wait();
-    }
+void PosixEnv::SubmitJob(std::function<void()>&& job) {
+  thread_pool_.SubmitJob(std::move(job));
+}
 
-    assert(!background_work_queue_.empty());
-    auto background_work_function = background_work_queue_.front().function;
-    void* background_work_arg = background_work_queue_.front().arg;
-    background_work_queue_.pop();
+// Set the max number of bg threads in thread pool.
+void PosixEnv::SetPoolBackgroundThreads(int num) {
+  thread_pool_.SetBackgroundThreads(num);
+}
 
-    background_work_mutex_.Unlock();
-    background_work_function(background_work_arg);
-  }
+// Get the max number of bg threads in thread pool.
+int PosixEnv::GetPoolBackgroundThreads() {
+  return thread_pool_.GetBackgroundThreads();
+}
+
+void PosixEnv::WaitForCompleteAndJoinAll() {
+  thread_pool_.WaitForJobsAndJoinAllThreads();
 }
 
 namespace {

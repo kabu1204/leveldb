@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #include "table/format.h"
 
@@ -136,6 +137,25 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   }
 
   return Status::OK();
+}
+
+void ValueHandle::EncodeTo(std::string* dst) const {
+  assert(dst != nullptr);
+  dst->clear();
+  PutVarint32(dst, table_);
+  PutVarint32(dst, block_);
+  PutVarint32(dst, offset_);
+  PutVarint32(dst, size_);
+}
+
+Status ValueHandle::DecodeFrom(Slice* input){
+  if (GetVarint32(input, &table_) && GetVarint32(input, &block_)
+      && GetVarint32(input, &offset_) && GetVarint32(input, &size_))
+  {
+    return Status::OK();
+  } else {
+    return Status::Corruption("bad Value handle");
+  }
 }
 
 }  // namespace leveldb

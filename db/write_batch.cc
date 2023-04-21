@@ -55,6 +55,14 @@ Status WriteBatch::Iterate(Handler* handler) const {
     char tag = input[0];
     input.remove_prefix(1);
     switch (tag) {
+      case kTypeValueHandle:
+        if (GetLengthPrefixedSlice(&input, &key) &&
+            GetLengthPrefixedSlice(&input, &value)) {
+          handler->PutValueHandle(key, value);
+        } else {
+          return Status::Corruption("bad WriteBatch Put");
+        }
+        break;
       case kTypeValue:
         if (GetLengthPrefixedSlice(&input, &key) &&
             GetLengthPrefixedSlice(&input, &value)) {
@@ -120,6 +128,11 @@ class MemTableInserter : public WriteBatch::Handler {
   SequenceNumber sequence_;
   MemTable* mem_;
 
+  void PutValueHandle(const Slice& key, const Slice& value) override {
+    mem_->Add(sequence_, kTypeValueHandle, key, value);
+    sequence_++;
+  }
+
   void Put(const Slice& key, const Slice& value) override {
     mem_->Add(sequence_, kTypeValue, key, value);
     sequence_++;
@@ -147,6 +160,26 @@ void WriteBatchInternal::Append(WriteBatch* dst, const WriteBatch* src) {
   SetCount(dst, Count(dst) + Count(src));
   assert(src->rep_.size() >= kHeader);
   dst->rep_.append(src->rep_.data() + kHeader, src->rep_.size() - kHeader);
+}
+
+void WriteBatchInternal::Put(WriteBatch* batch, const Slice& key,
+                             const Slice& value, ValueType type) {
+  assert(type >= kTypeDeletion && type <= kValueTypeForSeek);
+  SetCount(batch, Count(batch) + 1);
+  batch->rep_.push_back(static_cast<char>(type));
+  PutLengthPrefixedSlice(&batch->rep_, key);
+  switch (type) {
+    case kTypeValueHandle:
+    case kTypeValue:
+      PutLengthPrefixedSlice(&batch->rep_, value);
+      break;
+    case kTypeDeletion:
+      break;
+  }
+}
+
+void WriteBatch::Handler::PutValueHandle(const Slice& key, const Slice& value) {
+  Put(key, value);
 }
 
 }  // namespace leveldb

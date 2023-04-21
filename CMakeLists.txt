@@ -1,6 +1,7 @@
 # Copyright 2017 The LevelDB Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file. See the AUTHORS file for names of contributors.
+# Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 cmake_minimum_required(VERSION 3.9)
 # Keep the version below in sync with the one in db.h
@@ -65,9 +66,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
 else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   # Enable strict prototype warnings for C code in clang and gcc.
-  if(NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
+  if (NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-prototypes")
-  endif(NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
+  endif (NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
 
   # Disable C++ exceptions.
   string(REGEX REPLACE "-fexceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
@@ -76,6 +77,20 @@ else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   # Disable RTTI.
   string(REGEX REPLACE "-frtti" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
+
+  # Disable error on unused variable in clang
+  if (CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
+    EXECUTE_PROCESS(COMMAND ${CMAKE_CXX_COMPILER} --version OUTPUT_VARIABLE clang_full_version_string)
+    string(REGEX REPLACE ".*clang version ([0-9]+\\.[0-9]+).*" "\\1" CLANG_VERSION_STRING ${clang_full_version_string})
+    if (CLANG_VERSION_STRING GREATER_EQUAL 13.0)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-but-set-variable")
+    else ()
+      if (NOT CMAKE_CXX_FLAGS MATCHES "-Werror")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
+      endif (NOT CMAKE_CXX_FLAGS MATCHES "-Werror")
+    endif ()
+  endif (CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
+
 endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 
 # Test whether -Wthread-safety is available. See
@@ -120,87 +135,103 @@ include(GNUInstallDirs)
 
 add_library(leveldb "")
 target_sources(leveldb
-  PRIVATE
-    "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
-    "db/builder.cc"
-    "db/builder.h"
-    "db/c.cc"
-    "db/db_impl.cc"
-    "db/db_impl.h"
-    "db/db_iter.cc"
-    "db/db_iter.h"
-    "db/dbformat.cc"
-    "db/dbformat.h"
-    "db/dumpfile.cc"
-    "db/filename.cc"
-    "db/filename.h"
-    "db/log_format.h"
-    "db/log_reader.cc"
-    "db/log_reader.h"
-    "db/log_writer.cc"
-    "db/log_writer.h"
-    "db/memtable.cc"
-    "db/memtable.h"
-    "db/repair.cc"
-    "db/skiplist.h"
-    "db/snapshot.h"
-    "db/table_cache.cc"
-    "db/table_cache.h"
-    "db/version_edit.cc"
-    "db/version_edit.h"
-    "db/version_set.cc"
-    "db/version_set.h"
-    "db/write_batch_internal.h"
-    "db/write_batch.cc"
-    "port/port_stdcxx.h"
-    "port/port.h"
-    "port/thread_annotations.h"
-    "table/block_builder.cc"
-    "table/block_builder.h"
-    "table/block.cc"
-    "table/block.h"
-    "table/filter_block.cc"
-    "table/filter_block.h"
-    "table/format.cc"
-    "table/format.h"
-    "table/iterator_wrapper.h"
-    "table/iterator.cc"
-    "table/merger.cc"
-    "table/merger.h"
-    "table/table_builder.cc"
-    "table/table.cc"
-    "table/two_level_iterator.cc"
-    "table/two_level_iterator.h"
-    "util/arena.cc"
-    "util/arena.h"
-    "util/bloom.cc"
-    "util/cache.cc"
-    "util/coding.cc"
-    "util/coding.h"
-    "util/comparator.cc"
-    "util/crc32c.cc"
-    "util/crc32c.h"
-    "util/env.cc"
-    "util/filter_policy.cc"
-    "util/hash.cc"
-    "util/hash.h"
-    "util/logging.cc"
-    "util/logging.h"
-    "util/mutexlock.h"
-    "util/no_destructor.h"
-    "util/options.cc"
-    "util/random.h"
-    "util/status.cc"
+        PRIVATE
+        "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
+        "db/builder.cc"
+        "db/builder.h"
+        "db/c.cc"
+        "db/db_impl.cc"
+        "db/db_impl.h"
+        "db/db_iter.cc"
+        "db/db_iter.h"
+        "db/dbformat.cc"
+        "db/dbformat.h"
+        "db/dumpfile.cc"
+        "db/filename.cc"
+        "db/filename.h"
+        "db/log_format.h"
+        "db/log_reader.cc"
+        "db/log_reader.h"
+        "db/log_writer.cc"
+        "db/log_writer.h"
+        "db/memtable.cc"
+        "db/memtable.h"
+        "db/repair.cc"
+        "db/blob_db.h"
+        "db/blob_db.cc"
+        "db/skiplist.h"
+        "db/snapshot.h"
+        "db/table_cache.cc"
+        "db/table_cache.h"
+        "db/version_edit.cc"
+        "db/version_edit.h"
+        "db/version_set.cc"
+        "db/version_set.h"
+        "db/write_batch_internal.h"
+        "db/write_batch.cc"
+        "db/blob_vlog_impl.cc"
+        "db/blob_vlog_impl.h"
+        "db/blob_vlog_gc.cc"
+        "db/blob_vlog_version.cc"
+        "db/blob_vlog_version.h"
+        "db/blob_vlog_cache.cc"
+        "db/blob_vlog_cache.h"
+        "port/port_stdcxx.h"
+        "port/port.h"
+        "port/thread_annotations.h"
+        "table/block_builder.cc"
+        "table/block_builder.h"
+        "table/block.cc"
+        "table/block.h"
+        "table/filter_block.cc"
+        "table/filter_block.h"
+        "table/format.cc"
+        "table/format.h"
+        "table/iterator_wrapper.h"
+        "table/iterator.cc"
+        "table/merger.cc"
+        "table/merger.h"
+        "table/table_builder.cc"
+        "table/table.cc"
+        "table/two_level_iterator.cc"
+        "table/two_level_iterator.h"
+        "table/vlog.cc"
+        "table/vlog.h"
+        "table/value_batch.cc"
+        "table/value_batch.h"
+        "table/vlog_iter.h"
+        "util/arena.cc"
+        "util/arena.h"
+        "util/bloom.cc"
+        "util/cache.cc"
+        "util/coding.cc"
+        "util/coding.h"
+        "util/comparator.cc"
+        "util/crc32c.cc"
+        "util/crc32c.h"
+        "util/env.cc"
+        "util/filter_policy.cc"
+        "util/hash.cc"
+        "util/hash.h"
+        "util/logging.cc"
+        "util/logging.h"
+        "util/mutexlock.h"
+        "util/no_destructor.h"
+        "util/options.cc"
+        "util/random.h"
+        "util/status.cc"
+        "util/threadpool_impl.cc"
+        "util/threadpool_impl.h"
 
-  # Only CMake 3.3+ supports PUBLIC sources in targets exported by "install".
-  $<$<VERSION_GREATER:CMAKE_VERSION,3.2>:PUBLIC>
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/c.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/cache.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/comparator.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/db.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/dumpfile.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/env.h"
-    "${LEVELDB_PUBLIC_INCLUDE_DIR}/export.h"
+        # Only CMake 3.3+ supports PUBLIC sources in targets exported by "install".
+        $<$<VERSION_GREATER:CMAKE_VERSION,3.2>:PUBLIC>
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/c.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/cache.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/comparator.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/db.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/dumpfile.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/env.h"
+        "${LEVELDB_PUBLIC_INCLUDE_DIR}/export.h"
     "${LEVELDB_PUBLIC_INCLUDE_DIR}/filter_policy.h"
     "${LEVELDB_PUBLIC_INCLUDE_DIR}/iterator.h"
     "${LEVELDB_PUBLIC_INCLUDE_DIR}/options.h"
@@ -325,6 +356,7 @@ if(LEVELDB_BUILD_TESTS)
   if(NOT BUILD_SHARED_LIBS)
     target_sources(leveldb_tests
       PRIVATE
+        "db/value_log_test.cc"
         "db/autocompact_test.cc"
         "db/corruption_test.cc"
         "db/db_test.cc"
@@ -391,7 +423,6 @@ if(LEVELDB_BUILD_TESTS)
   endfunction(leveldb_test)
 
   leveldb_test("db/c_test.c")
-#  leveldb_test("user/main.cc")
 
   if(NOT BUILD_SHARED_LIBS)
     # TODO(costan): This test also uses

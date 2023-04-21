@@ -1,23 +1,42 @@
-LevelDB is a fast key-value storage library written at Google that provides an ordered mapping from string keys to string values.
+LevelDB is a fast key-value storage library written at Google that provides an ordered mapping from string keys to
+string values.
 
 > **This repository is receiving very limited maintenance. We will only review the following types of changes.**
 >
 > * Fixes for critical bugs, such as data loss or memory corruption
-> * Changes absolutely needed by internally supported leveldb clients. These typically fix breakage introduced by a language/standard library/OS update
+> * Changes absolutely needed by internally supported leveldb clients. These typically fix breakage introduced by a
+    language/standard library/OS update
 
 [![ci](https://github.com/google/leveldb/actions/workflows/build.yml/badge.svg)](https://github.com/google/leveldb/actions/workflows/build.yml)
 
 Authors: Sanjay Ghemawat (sanjay@google.com) and Jeff Dean (jeff@google.com)
 
+# BlobDB
+
+## NOTICE
+
+This repo is forked from LevelDB 1.23 to support BlobDB, based on
+the paper [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf).
+
+BlobDB does **NOT SUPPORT Windows**.
+
+## Implementation details
+
+See [doc/blobdb_impl.md](./doc/blobdb_impl.md)
+
+## Benchmarks with LevelDB
+
+See [doc/blobdb_benchmarks.md](./doc/blobdb_benchmarks.md)
+
 # Features
 
-  * Keys and values are arbitrary byte arrays.
-  * Data is stored sorted by key.
-  * Callers can provide a custom comparison function to override the sort order.
-  * The basic operations are `Put(key,value)`, `Get(key)`, `Delete(key)`.
-  * Multiple changes can be made in one atomic batch.
-  * Users can create a transient snapshot to get a consistent view of data.
-  * Forward and backward iteration is supported over the data.
+* Keys and values are arbitrary byte arrays.
+* Data is stored sorted by key.
+* Callers can provide a custom comparison function to override the sort order.
+* The basic operations are `Put(key,value)`, `Get(key)`, `Delete(key)`.
+* Multiple changes can be made in one atomic batch.
+* Users can create a transient snapshot to get a consistent view of data.
+* Forward and backward iteration is supported over the data.
   * Data is automatically compressed using the [Snappy compression library](https://google.github.io/snappy/).
   * External activity (file system operations etc.) is relayed through a virtual interface so users can customize the operating system interactions.
 

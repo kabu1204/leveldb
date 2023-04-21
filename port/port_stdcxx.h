@@ -1,6 +1,7 @@
 // Copyright (c) 2018 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #ifndef STORAGE_LEVELDB_PORT_PORT_STDCXX_H_
 #define STORAGE_LEVELDB_PORT_PORT_STDCXX_H_
@@ -29,6 +30,7 @@
 #include <snappy.h>
 #endif  // HAVE_SNAPPY
 
+#include <atomic>
 #include <cassert>
 #include <condition_variable>  // NOLINT
 #include <cstddef>
@@ -42,6 +44,76 @@ namespace leveldb {
 namespace port {
 
 class CondVar;
+
+/*
+ * TODO: is it too expensive to use a virtual spinlock?
+ */
+class LOCKABLE RWLock {
+ public:
+  RWLock() = default;
+  ~RWLock() = default;
+  RWLock(const RWLock&) = delete;
+  RWLock& operator=(const RWLock&) = delete;
+
+  virtual void RLock() SHARED_LOCK_FUNCTION() = 0;
+
+  virtual void WLock() EXCLUSIVE_LOCK_FUNCTION() = 0;
+
+  virtual void RUnlock() UNLOCK_FUNCTION() = 0;
+
+  virtual void WUnlock() UNLOCK_FUNCTION() = 0;
+
+  virtual void AssertRLockHeld() ASSERT_SHARED_LOCK() {}
+  virtual void AssertWLockHeld() ASSERT_EXCLUSIVE_LOCK() {}
+};
+
+class LOCKABLE RWSpinLock : public RWLock {
+ public:
+  RWSpinLock() : x(0) {}
+  ~RWSpinLock() = default;
+  RWSpinLock(const RWSpinLock&) = delete;
+  RWSpinLock& operator=(const RWSpinLock&) = delete;
+
+  void RLock() SHARED_LOCK_FUNCTION() override {
+    while (!TryRLock())
+      ;
+  }
+
+  void WLock() EXCLUSIVE_LOCK_FUNCTION() override {
+    while (!TryWLock())
+      ;
+  }
+
+  void RUnlock() UNLOCK_FUNCTION() override {
+    x.fetch_sub(0b10, std::memory_order_release);
+  }
+
+  void WUnlock() UNLOCK_FUNCTION() override {
+    x.fetch_and(~(0b01), std::memory_order_release);
+  }
+
+  bool TryRLock() SHARED_TRYLOCK_FUNCTION(true) {
+    if (x.fetch_add(0b10, std::memory_order_acquire) & 0b01) {
+      x.fetch_sub(0b10, std::memory_order_release);
+      return false;
+    }
+    return true;
+  }
+
+  bool TryWLock() EXCLUSIVE_TRYLOCK_FUNCTION(true) {
+    uint32_t expected = 0;
+    return x.compare_exchange_strong(expected, 0b01, std::memory_order_acq_rel);
+  }
+
+ private:
+  /*
+   * |000000|0| => no readers/writers
+   * |000000|1| => writer exclusive
+   * |000001|0| => 1 reader
+   * |000100|0| => 8 readers
+   */
+  std::atomic<uint32_t> x;
+};
 
 // Thinly wraps std::mutex.
 class LOCKABLE Mutex {
@@ -86,6 +158,50 @@ class CondVar {
  private:
   std::condition_variable cv_;
   Mutex* const mu_;
+};
+
+/*
+ * Read-Write Lock based on CondVar
+ * TODO:
+ *  1. use notify_one() to avoid thundering herd
+ *  2. use atomic<uint32_t> to avoid acquiring mutex when unlocking.
+ */
+class LOCKABLE RWMutex : public RWLock {
+ public:
+  RWMutex() : readers_(0) {}
+  ~RWMutex() = default;
+  RWMutex(const RWMutex&) = delete;
+  RWMutex& operator=(const RWMutex&) = delete;
+
+  void WLock() EXCLUSIVE_LOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    while (readers_ != 0) cv_.wait(lk, [this]() { return readers_ == 0; });
+    readers_ = 0b01;
+  }
+
+  void WUnlock() UNLOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    readers_ = 0;
+    cv_.notify_all();
+  }
+
+  void RLock() SHARED_LOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    while (readers_ & 0b01)
+      cv_.wait(lk, [this]() { return !(readers_ & 0b01); });
+    readers_ += 0b10;
+  }
+
+  void RUnlock() UNLOCK_FUNCTION() override {
+    std::unique_lock<std::mutex> lk(mu_);
+    readers_ -= 0b10;
+    if (readers_ == 0) cv_.notify_one();
+  }
+
+ private:
+  std::condition_variable cv_;
+  std::mutex mu_;
+  uint32_t readers_;
 };
 
 inline bool Snappy_Compress(const char* input, size_t length,

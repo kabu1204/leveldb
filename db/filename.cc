@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #include "db/filename.h"
 
@@ -25,6 +26,10 @@ static std::string MakeFileName(const std::string& dbname, uint64_t number,
   return dbname + buf;
 }
 
+std::string DBFilePath(const std::string& dbname, const std::string& fname) {
+  return dbname + "/" + fname;
+}
+
 std::string LogFileName(const std::string& dbname, uint64_t number) {
   assert(number > 0);
   return MakeFileName(dbname, number, "log");
@@ -33,6 +38,23 @@ std::string LogFileName(const std::string& dbname, uint64_t number) {
 std::string TableFileName(const std::string& dbname, uint64_t number) {
   assert(number > 0);
   return MakeFileName(dbname, number, "ldb");
+}
+
+std::string VLogFileName(const std::string& dbname, uint64_t number) {
+  assert(number > 0);
+  return MakeFileName(dbname, number, "vlog");  // leveldb value table
+}
+
+std::string VLogManifestFileName(const std::string& dbname, uint64_t number) {
+  assert(number > 0);
+  char buf[100];
+  std::snprintf(buf, sizeof(buf), "/VLOG-MANIFEST-%06llu",
+                static_cast<unsigned long long>(number));
+  return dbname + buf;
+}
+
+std::string VLogCurrentFileName(const std::string& dbname) {
+  return dbname + "/VLOG-CURRENT";
 }
 
 // starting from leveldb v1.14, the .sst suffix is deprecated, using .ldb suffix
@@ -83,6 +105,9 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
   if (rest == "CURRENT") {
     *number = 0;
     *type = kCurrentFile;
+  } else if (rest == "VLOG-CURRENT") {
+    *number = 0;
+    *type = kVLogCurrentFile;
   } else if (rest == "LOCK") {
     *number = 0;
     *type = kDBLockFile;
@@ -100,6 +125,17 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
     }
     *type = kDescriptorFile;
     *number = num;
+  } else if (rest.starts_with("VLOG-MANIFEST-")) {
+    rest.remove_prefix(strlen("VLOG-MANIFEST-"));
+    uint64_t num;
+    if (!ConsumeDecimalNumber(&rest, &num)) {
+      return false;
+    }
+    if (!rest.empty()) {
+      return false;
+    }
+    *type = kVLogManifestFile;
+    *number = num;
   } else {
     // Avoid strtoull() to keep filename format independent of the
     // current locale
@@ -114,12 +150,32 @@ bool ParseFileName(const std::string& filename, uint64_t* number,
       *type = kTableFile;
     } else if (suffix == Slice(".dbtmp")) {
       *type = kTempFile;
+    } else if (suffix == Slice(".vlog")) {
+      *type = kVLogFile;
     } else {
       return false;
     }
     *number = num;
   }
   return true;
+}
+
+Status SetVLogCurrentFile(Env* env, const std::string& dbname,
+                          uint64_t manifest_number) {
+  // Remove leading "dbname/" and add newline to manifest file name
+  std::string manifest = VLogManifestFileName(dbname, manifest_number);
+  Slice contents = manifest;
+  assert(contents.starts_with(dbname + "/"));
+  contents.remove_prefix(dbname.size() + 1);
+  std::string tmp = TempFileName(dbname, manifest_number);
+  Status s = WriteStringToFileSync(env, contents.ToString() + "\n", tmp);
+  if (s.ok()) {
+    s = env->RenameFile(tmp, VLogCurrentFileName(dbname));
+  }
+  if (!s.ok()) {
+    env->RemoveFile(tmp);
+  }
+  return s;
 }
 
 Status SetCurrentFile(Env* env, const std::string& dbname,

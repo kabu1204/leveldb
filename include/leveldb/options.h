@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 
 #ifndef STORAGE_LEVELDB_INCLUDE_OPTIONS_H_
 #define STORAGE_LEVELDB_INCLUDE_OPTIONS_H_
@@ -140,6 +141,37 @@ struct LEVELDB_EXPORT Options {
   // Many applications will benefit from passing the result of
   // NewBloomFilterPolicy() here.
   const FilterPolicy* filter_policy = nullptr;
+
+  // Soft limit of vlog file size
+  // Default: 64MB
+  size_t blob_max_file_size = 64 << 20;
+
+  // Max opened vlog files
+  // Default: 1000
+  size_t blob_max_open_files = 1000;
+
+  // Value size threshold to enter vlog file
+  // Default: 1KB
+  size_t blob_value_size_threshold = 1024;
+
+  // Minimum ratio of the size of expired records
+  // to rewrite vlog file when GC.
+  // Default: 50%
+  int blob_gc_size_discard_threshold = 50;
+
+  // Minimum ratio of the number of expired records
+  // to rewrite vlog file when GC.
+  // Default: 50%
+  int blob_gc_num_discard_threshold = 50;
+
+  // BlobDB will select a vlog file for GC
+  // every blob_gc_interval seconds
+  // Default: 600s
+  int blob_gc_interval = 600;
+
+  // Number of background read threads for concurrent prefetch during iteration
+  // Default: 8
+  int blob_background_read_threads = 8;
 };
 
 // Options that control read operations
@@ -151,6 +183,9 @@ struct LEVELDB_EXPORT ReadOptions {
   // Should the data read for this iteration be cached in memory?
   // Callers may wish to set this field to false for bulk scans.
   bool fill_cache = true;
+
+  // If true, background concurrent prefetch for BlobDBIterator
+  bool blob_prefetch = true;
 
   // If "snapshot" is non-null, read as of the supplied snapshot
   // (which must belong to the DB that is being read and which must

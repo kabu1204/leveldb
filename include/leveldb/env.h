@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 //
 // An Env is an interface used by the leveldb implementation to access
 // operating system functionality like the filesystem etc.  Callers
@@ -15,6 +16,7 @@
 
 #include <cstdarg>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -47,6 +49,7 @@ class RandomAccessFile;
 class SequentialFile;
 class Slice;
 class WritableFile;
+class AppendableRandomAccessFile;
 
 class LEVELDB_EXPORT Env {
  public:
@@ -109,6 +112,17 @@ class LEVELDB_EXPORT Env {
   // an Env that does not support appending.
   virtual Status NewAppendableFile(const std::string& fname,
                                    WritableFile** result);
+
+  virtual Status NewAppendableRandomAccessFile(const std::string& filename,
+                                       AppendableRandomAccessFile** result){
+    return Status::OK();
+  }
+
+  virtual Status TruncateFile(const std::string& filename, uint64_t fileSize){
+    return Status::NotSupported("not implemented");
+  }
+
+  virtual size_t PageSize() const = 0;
 
   // Returns true iff the named file exists.
   virtual bool FileExists(const std::string& fname) = 0;
@@ -197,8 +211,22 @@ class LEVELDB_EXPORT Env {
   // serialized.
   virtual void Schedule(void (*function)(void* arg), void* arg) = 0;
 
+  virtual void SubmitJob(const std::function<void()>& job) = 0;
+
+  virtual void SubmitJob(std::function<void()>&& job) = 0;
+
+  // Set the max number of bg threads in thread pool.
+  virtual void SetPoolBackgroundThreads(int num) = 0;
+
+  // Get the max number of bg threads in thread pool.
+  virtual int GetPoolBackgroundThreads() = 0;
+
+  // Wait for all jobs to complete and join all background threads
+  virtual void WaitForCompleteAndJoinAll() = 0;
+
   // Start a new thread, invoking "function(arg)" within the new thread.
   // When "function(arg)" returns, the thread will be destroyed.
+  // The started thread is not belonged to thread pool.
   virtual void StartThread(void (*function)(void* arg), void* arg) = 0;
 
   // *path is set to a temporary directory that can be used for testing. It may
@@ -209,6 +237,8 @@ class LEVELDB_EXPORT Env {
 
   // Create and return a log file for storing informational messages.
   virtual Status NewLogger(const std::string& fname, Logger** result) = 0;
+
+  virtual Status NewStdLogger(Logger** result) = 0;
 
   // Returns the number of micro-seconds since some fixed point in time. Only
   // useful for computing deltas of time.
@@ -289,6 +319,20 @@ class LEVELDB_EXPORT WritableFile {
   virtual Status Sync() = 0;
 };
 
+class LEVELDB_EXPORT AppendableRandomAccessFile : public RandomAccessFile,
+                                                  public WritableFile {
+ public:
+  AppendableRandomAccessFile() = default;
+
+  AppendableRandomAccessFile(const AppendableRandomAccessFile&) = delete;
+  AppendableRandomAccessFile& operator=(const AppendableRandomAccessFile&) =
+      delete;
+
+  ~AppendableRandomAccessFile() override;
+
+  virtual uint64_t Offset() { return 0; }
+};
+
 // An interface for writing log messages.
 class LEVELDB_EXPORT Logger {
  public:
@@ -355,6 +399,19 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
   Status NewAppendableFile(const std::string& f, WritableFile** r) override {
     return target_->NewAppendableFile(f, r);
   }
+  size_t PageSize() const override {
+    return target_->PageSize();
+  }
+  Status NewAppendableRandomAccessFile(const std::string& filename,
+                                               AppendableRandomAccessFile** result) override
+  {
+    return target_->NewAppendableRandomAccessFile(filename, result);
+  }
+
+  Status TruncateFile(const std::string& filename, uint64_t fileSize) override {
+    return target_->TruncateFile(filename, fileSize);
+  }
+
   bool FileExists(const std::string& f) override {
     return target_->FileExists(f);
   }
@@ -381,9 +438,31 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
     return target_->LockFile(f, l);
   }
   Status UnlockFile(FileLock* l) override { return target_->UnlockFile(l); }
+
   void Schedule(void (*f)(void*), void* a) override {
     return target_->Schedule(f, a);
   }
+
+  void SubmitJob(const std::function<void()>& job) override {
+    return target_->SubmitJob(job);
+  }
+
+  void SubmitJob(std::function<void()>&& job) override {
+    return target_->SubmitJob(job);
+  }
+
+  void SetPoolBackgroundThreads(int num) override {
+    return target_->SetPoolBackgroundThreads(num);
+  }
+
+  int GetPoolBackgroundThreads() override {
+    return target_->GetPoolBackgroundThreads();
+  }
+
+  void WaitForCompleteAndJoinAll() override {
+    target_->WaitForCompleteAndJoinAll();
+  }
+
   void StartThread(void (*f)(void*), void* a) override {
     return target_->StartThread(f, a);
   }
@@ -392,6 +471,9 @@ class LEVELDB_EXPORT EnvWrapper : public Env {
   }
   Status NewLogger(const std::string& fname, Logger** result) override {
     return target_->NewLogger(fname, result);
+  }
+  Status NewStdLogger(Logger** result) override {
+    return target_->NewStdLogger(result);
   }
   uint64_t NowMicros() override { return target_->NowMicros(); }
   void SleepForMicroseconds(int micros) override {

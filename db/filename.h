@@ -1,6 +1,7 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Modifications Copyright 2023 Chengye YU <yuchengye2013 AT outlook.com>.
 //
 // File names used by DB code
 
@@ -22,6 +23,9 @@ enum FileType {
   kLogFile,
   kDBLockFile,
   kTableFile,
+  kVLogFile,
+  kVLogManifestFile,
+  kVLogCurrentFile,
   kDescriptorFile,
   kCurrentFile,
   kTempFile,
@@ -33,10 +37,18 @@ enum FileType {
 // "dbname".
 std::string LogFileName(const std::string& dbname, uint64_t number);
 
+std::string DBFilePath(const std::string& dbname, const std::string& fname);
+
 // Return the name of the sstable with the specified number
 // in the db named by "dbname".  The result will be prefixed with
 // "dbname".
 std::string TableFileName(const std::string& dbname, uint64_t number);
+
+std::string VLogFileName(const std::string& dbname, uint64_t number);
+
+std::string VLogManifestFileName(const std::string& dbname, uint64_t number);
+
+std::string VLogCurrentFileName(const std::string& dbname);
 
 // Return the legacy file name for an sstable with the specified number
 // in the db named by "dbname". The result will be prefixed with
@@ -72,6 +84,9 @@ std::string OldInfoLogFileName(const std::string& dbname);
 // filename was successfully parsed, returns true.  Else return false.
 bool ParseFileName(const std::string& filename, uint64_t* number,
                    FileType* type);
+
+Status SetVLogCurrentFile(Env* env, const std::string& dbname,
+                          uint64_t manifest_number);
 
 // Make the CURRENT file point to the descriptor file with the
 // specified number.
