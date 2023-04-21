@@ -4,6 +4,7 @@
 #include "db/blob_db.h"
 #include "db/blob_vlog_impl.h"
 #include "db/blob_vlog_version.h"
+#include "db/dbformat.h"
 #include "db/filename.h"
 #include "db/write_batch_internal.h"
 
@@ -264,6 +265,7 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
   rwlock_.RUnlock();
 
   Slice key;
+  ValueType valueType;
   std::string handle_encoding;
   ValueHandle handle, current;
   ValueBatch& vb = gc->value_batch;
@@ -273,7 +275,7 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
   for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
     key = iter->key();
 
-    s = db_->Get(ReadOptions(), key, &handle_encoding);
+    s = db_->Get(ReadOptions(), key, &handle_encoding, &valueType);
     if (!s.ok() && !s.IsNotFound()) {
       s = Status::IOError("[GC] failed to Get from DBImpl", s.ToString());
       break;
@@ -284,9 +286,11 @@ Status ValueLogImpl::Collect(GarbageCollection* gc) {
     gc->total_entries++;
     gc->total_size += current.size_;
 
-    Slice input(handle_encoding);
-    handle.DecodeFrom(&input);
-    if (s.IsNotFound() || handle != current) {
+    if (valueType == kTypeValueHandle) {
+      Slice input(handle_encoding);
+      handle.DecodeFrom(&input);
+    }
+    if (s.IsNotFound() || valueType != kTypeValueHandle || handle != current) {
       gc->discard_entries++;
       gc->discard_size += current.size_;
       continue;

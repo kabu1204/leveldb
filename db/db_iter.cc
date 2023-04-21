@@ -335,6 +335,7 @@ class BlobDBIter : public Iterator {
         forward_(true),
         bg_thread_finished_(false),
         end_(false),
+        closed_(false),
         cv_(&mutex_),
         buf_(nullptr) {
     if (prefetch) {

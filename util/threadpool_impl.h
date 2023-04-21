@@ -1,11 +1,11 @@
-//
-// Created by 于承业 on 2023/4/19.
-//
+// Copyright (c) 2023. Chengye YU <yuchengye2013 AT outlook.com>
+// SPDX-License-Identifier: BSD-3-Clause
 
 #ifndef LEVELDB_THREADPOOL_IMPL_H
 #define LEVELDB_THREADPOOL_IMPL_H
 
 #include <deque>
+#include <functional>
 #include <vector>
 
 #include "leveldb/status.h"

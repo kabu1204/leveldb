@@ -655,7 +655,8 @@ TEST(VLOG_TEST, DBWrapperGCOverwriteAfterCollect) {
     std::string value;
     Status s;
     for (const auto& key : *rewrites) {
-      std::string val = "NEWvalue2" + std::string(256, 'x');
+      std::string val =
+          "NEWvalue2" + ((rand() % 2 == 0) ? "" : std::string(256, 'x'));
       s = db->Put(WriteOptions(), key, val);
       (*kvmap)[key] = val;
       assert(s.ok());

@@ -202,7 +202,13 @@ void BlobDB::ReleaseSnapshot(const Snapshot* snapshot) {
 }
 
 bool BlobDB::GetProperty(const Slice& property, std::string* value) {
-  return db_->GetProperty(property, value);
+  value->clear();
+  bool ret = db_->GetProperty(property, value);
+  if (ret && property == "leveldb.stats") {
+    value->append("\n");
+    value->append(vlog_->DebugString());
+  }
+  return ret;
 }
 
 void BlobDB::GetApproximateSizes(const Range* range, int n, uint64_t* sizes) {
