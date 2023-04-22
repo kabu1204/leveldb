@@ -139,7 +139,7 @@ record:
 KeySize:    VarInt32
 ValueSize:  VarInt32
 key:        uint8[KeySize]
-value:      uinr8[ValueSize]
+value:      uint8[ValueSize]
 ```
 
 At any time, ValueLog has 1 writable vlog file and multiple read-only
