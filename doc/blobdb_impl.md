@@ -21,7 +21,33 @@
 4. ValueLog recovery
 5. Garbage collection
 6. Writer group
-7. Concurrent prefetch
+7. Concurrent prefetch (not good)
+
+The implementation involves several modification on original code
+and some **newly added files**:
+```shell
+db/
+ |--blob_db.cc
+ |--blob_db.h
+ |--blob_vlog_impl.cc
+ |--blob_vlog_impl.h
+ |--blob_vlog_gc.cc
+ |--blob_vlog_cache.cc
+ |--blob_vlog_cache.h
+ |--blob_vlog_version.cc
+ |--blob_vlog_version.h
+ |--value_log_test.cc
+table/
+ |--value_batch.cc
+ |--value_batch.h
+ |--vlog.cc
+ |--vlog.h
+ |--vlog_iter.h
+util/
+ |--sync_point.h
+ |--threadpool_impl.cc
+ |--threadpool_impl.h
+```
 
 ## BlobDB write
 
