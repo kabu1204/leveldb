@@ -172,7 +172,7 @@ We use `BlobVersionEdit` to record state change:
 
 * Every time ValueLog GC finishes collecting an old file and rewriting to a new file,
   it creates a `BlobVersionEdit`, and (1)add new file to read-only file, (2)add old file to
-  obsoleted files.
+  obsoleted files, (3) record next file number.
 
 The BlobVersionEdit will first be appended to current manifest file, and apply to ValueLog.
 
